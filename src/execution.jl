@@ -187,6 +187,30 @@ function emit_cudacall(func, dims, kwargs, args, tt::Type)
     end
 end
 
+function create_eh(mod, fun)
+    return quote
+        # synchronize in order to trap previous exceptions
+        synchronize(default_stream())
+
+        has_exceptions = true
+        error = try
+            CuGlobal{Ptr{Ptr{Void}}}($mod, "error")
+        catch err
+            err == CUDAdrv.ERROR_NOT_FOUND || rethrow(err)
+            has_exceptions = false
+        end
+
+        if has_exceptions
+            ptr = get(error)
+            if ptr != C_NULL
+                ccall(:jl_throw, Void, (Ptr{Void},), ptr)
+            end
+        else
+            warn("could not find exception storage in module")
+        end
+    end
+end
+
 
 #
 # cufunction
@@ -258,7 +282,7 @@ end
 end
 
 # Compile and execute a CUDA kernel from a Julia function
-const func_cache = Dict{UInt, CuFunction}()
+const func_cache = Dict{UInt, Tuple{CuModule,CuFunction}}()
 @generated function generated_cuda{F<:Function}(dims::Tuple{CuDim, CuDim},
                                                 func::F, argspec...;
                                                 kwargs...)
@@ -268,14 +292,15 @@ const func_cache = Dict{UInt, CuFunction}()
 
     kernel_allocations, args = emit_allocations(args, codegen_tt, call_tt)
 
-    @gensym cuda_fun
+    @gensym cuda_mod cuda_fun
     key = hash(Base.tt_cons(func, codegen_tt))
     kernel_compilation = quote
         if (haskey(CUDAnative.func_cache, $key))
-            $cuda_fun = CUDAnative.func_cache[$key]
+            $cuda_mod, $cuda_fun = CUDAnative.func_cache[$key]
         else
-            $cuda_fun, _ = cufunction(func, $codegen_tt)
-            CUDAnative.func_cache[$key] = $cuda_fun
+            $cuda_fun, $cuda_mod = cufunction(func, $codegen_tt)
+            CUDAnative.func_cache[$key] = ($cuda_mod, $cuda_fun)
+            # TODO: empty this cache at the appropriate time (ever?)
         end
     end
 
@@ -286,10 +311,17 @@ const func_cache = Dict{UInt, CuFunction}()
 
     kernel_call = emit_cudacall(cuda_fun, :(dims), :(kwargs), concrete_args, concrete_call_tt)
 
+    @static if DEBUG
+        kernel_check = create_eh(cuda_mod, cuda_fun)
+    else
+        kernel_check = quote end
+    end
+
     # Throw everything together
     exprs = Expr(:block)
     append!(exprs.args, kernel_allocations.args)
     append!(exprs.args, kernel_compilation.args)
     append!(exprs.args, kernel_call.args)
+    append!(exprs.args, kernel_check.args)
     return exprs
 end
