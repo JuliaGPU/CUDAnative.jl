@@ -1,7 +1,7 @@
 ###
 # Using Cxx.jl to compile a C++ cuda kernel and then call it from Julia. 
 ###
-using Cxx
+using Cxx, CUDAnative, CUDAdrv
 
 # Figure out if the CPU is set to the correct value
 CI = Cxx.new_clang_instance(false, false, target = "nvptx64-nvdia-cuda", CPU = "sm_35")
@@ -39,7 +39,17 @@ __device__ void saxpy(float a, float *x, float *y, float *out, size_t n)
 }
 """
 
-@target ptx saxpy(a, x, y, out, n) = @cxx saxpy(a, x, y, out, n)
+# Cxx.cppconvert{T}(A::CuDeviceArray{T}) = pointer(A) :: Ptr{T}
+@target ptx function saxpy(a, x, y, out, n)
+    @cxx saxpy(a, pointer(x), pointer(y), pointer(out), n)
+end
+
+##
+# Debug:
+##
+
+# code_warntype(STDOUT, saxpy, (Float32, CuDeviceArray{Float32, 1}, CuDeviceArray{Float32, 1}, CuDeviceArray{Float32, 1}, Csize_t))
+# code_llvm(STDOUT, saxpy, (Float32, CuDeviceArray{Float32, 1}, CuDeviceArray{Float32, 1}, CuDeviceArray{Float32, 1}, Csize_t))
 
 dev = CuDevice(0)
 ctx = CuContext(dev)
