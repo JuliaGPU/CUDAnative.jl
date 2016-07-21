@@ -187,6 +187,13 @@ function emit_cudacall(func, dims, kwargs, args, tt::Type)
     end
 end
 
+immutable DeviceException <: Exception
+    ex::Exception
+    file::String
+    line::Int
+    col::Int
+end
+
 function create_eh(mod, fun)
     return quote
         # synchronize in order to trap previous exceptions
@@ -194,7 +201,7 @@ function create_eh(mod, fun)
 
         has_exceptions = true
         error = try
-            CuGlobal{Ptr{Ptr{Void}}}($mod, "error")
+            CuGlobal{Ptr{Ptr{Void}}}($mod, "jl_exception")
         catch err
             err == CUDAdrv.ERROR_NOT_FOUND || rethrow(err)
             has_exceptions = false
@@ -203,7 +210,28 @@ function create_eh(mod, fun)
         if has_exceptions
             ptr = get(error)
             if ptr != C_NULL
-                ccall(:jl_throw, Void, (Ptr{Void},), ptr)
+                has_diloc = true
+                line, col, fileptr, filelen = 0, 0, C_NULL, 0
+                try
+                    line = get(CuGlobal{Cuint}($mod, "jl_exception_line"))
+                    col = get(CuGlobal{Cuint}($mod, "jl_exception_column"))
+                    fileptr = DevicePtr{Cuchar}(
+                        get(CuGlobal{Ptr{Cuchar}}($mod, "jl_exception_fileptr")),
+                        true)
+                    filelen = get(CuGlobal{Cuint}($mod, "jl_exception_filelen"))
+                catch err
+                    err == CUDAdrv.ERROR_NOT_FOUND || rethrow(err)
+                    has_diloc = false
+                end
+                ex = Base.unsafe_pointer_to_objref(ptr)
+
+                file = ""
+                if !isnull(fileptr)
+                    chars = CuArray(Cuchar, Int(filelen), fileptr)
+                    file = String(Array(chars))
+                end
+
+                throw(DeviceException(ex, file, line, col))
             end
         else
             warn("could not find exception storage in module")
