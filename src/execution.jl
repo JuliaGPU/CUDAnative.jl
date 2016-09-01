@@ -215,9 +215,8 @@ function create_eh(mod, fun)
                 try
                     line = get(CuGlobal{Cuint}($mod, "jl_exception_line"))
                     col = get(CuGlobal{Cuint}($mod, "jl_exception_column"))
-                    fileptr = DevicePtr{Cuchar}(
-                        get(CuGlobal{Ptr{Cuchar}}($mod, "jl_exception_fileptr")),
-                        true)
+                    fileptr = unsafe_convert(DevicePtr{Cuchar},
+                        get(CuGlobal{Ptr{Cuchar}}($mod, "jl_exception_fileptr")))
                     filelen = get(CuGlobal{Cuint}($mod, "jl_exception_filelen"))
                 catch err
                     err == CUDAdrv.ERROR_NOT_FOUND || rethrow(err)
@@ -227,7 +226,7 @@ function create_eh(mod, fun)
 
                 file = ""
                 if !isnull(fileptr)
-                    chars = CuArray(Cuchar, Int(filelen), fileptr)
+                    chars = CuArray{Cuchar}(Int(filelen), fileptr)
                     file = String(Array(chars))
                 end
 
