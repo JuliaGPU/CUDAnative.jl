@@ -277,6 +277,17 @@ end
 @test 1-2     == @narrow32 1-2
 @test 1000÷-2 == @narrow32 1000÷-2
 
+# bug: don't rewrite curly
+# FIXME: this does not break with Array?
+@narrow32 function exec_narrow_curly{T}(::CuDeviceArray{T,1}) end
+
+# bug: escape properly
+@eval module NarrowModule
+using CUDAnative
+@narrow32 function foo() end
+end
+NarrowModule.foo()
+
 end
 
 ############################################################################################

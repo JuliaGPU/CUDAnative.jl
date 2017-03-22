@@ -15,15 +15,15 @@ macro narrow(width, ex)
 end
 
 macro narrow32(ex)
-    quote
+    esc(quote
         @narrow 32 $ex
-    end
+    end)
 end
 
 narrow_code(width, ex) = ex
 function narrow_code(width, ex::Expr)
     # some special AST nodes we probably shouldn't convert
-    if ex.head == :line
+    if ex.head == :line || ex.head == :curly
         return ex
     end
     
