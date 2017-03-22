@@ -257,4 +257,22 @@ end
 
 ############################################################################################
 
+@testset "@narrow" begin
+
+@eval search_code(ex::Expr, val) = sum(map(arg->search_code(arg,val), ex.args))
+@eval search_code(ex, val) = ex===val ? 1 : 0
+
+code = @macroexpand @narrow function ()
+    i = threadIdx().x + 2000 + 2.0
+end
+
+@test search_code(code, 2000) == 0
+@test search_code(code, UInt16(2000)) == 1
+@test search_code(code, 2.0) == 0
+@test search_code(code, Float16(2.0)) == 1
+
+end
+
+############################################################################################
+
 end
