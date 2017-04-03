@@ -11,6 +11,9 @@ end
 dev = CuDevice(0)
 ctx = CuContext(dev)
 
+CUDAnative.precompile(kernel_vadd,
+                      (CuDeviceArray{Float32,2},CuDeviceArray{Float32,2},CuDeviceArray{Float32,2}))
+
 dims = (3,4)
 a = round.(rand(Float32, dims) * 100)
 b = round.(rand(Float32, dims) * 100)
