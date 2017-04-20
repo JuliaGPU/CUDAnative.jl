@@ -65,7 +65,7 @@ struct Launch
     Launch() = new(CuEvent(), CuEvent())
 end
 
-const kernel_launches = Dict{Symbol,Vector{Launch}}()
+const launches = Vector{Tuple{Symbol,Launch}}()
 
 """
     fetch() -> data
@@ -74,7 +74,7 @@ Returns the contents of the internal buffer. This can be used for manual inspect
 pass to `print`.
 """
 function fetch()
-    return [kernel_launches]
+    return [launches]
 end
 
 """
@@ -83,22 +83,18 @@ end
 Clear any existing data from the internal buffer.
 """
 function clear()
-    empty!(kernels)
+    empty!(launches)
 end
 
 
 ## instrumentation
 
 macro instr_launch(kernel, ex)
-    if !haskey(kernel_launches, kernel)
-        kernel_launches[kernel] = Launch[]
-    end
-
     quote
         # tic
         if enabled[]
             lnch = Launch()
-            push!(kernel_launches[$(QuoteNode(kernel))], lnch)
+            push!(launches, ($(QuoteNode(kernel)), lnch))
             nvprof_enabled[] && start_nvprof()
             record(lnch.start)
         end
@@ -125,23 +121,38 @@ argument, the default internal buffer will be used.
 
 The keyword arguments can be any combination of:
 
- - `format` -- Determines how timings are printed. Possible values, :csv.
+ - `format` -- Determines how timings are printed. Possible values, :summary, :csv.
 """
-function print(io, data, format=:csv)
+function print(io, data, format=:summary)
     (kernel_launches, ) = data
-    any(fmt->fmt == format, [:csv]) || error("Unknown format")
+    any(fmt->fmt == format, [:csv, :summary]) || error("Unknown format")
 
     # header
     if format == :csv
         println(io, "kernel,time(μs)")
+    elseif format == :summary
+        summary = Dict{Symbol,Vector{Float64}}()
     end
 
     # data
-    for (kernel, launches) in kernel_launches, lnch in launches
+    kernels = unique(map(t->t[1], kernel_launches))
+    for kernel in kernels, lnch in map(t->t[2], filter(t->t[1]==kernel, kernel_launches))
         synchronize(lnch.stop)
+        t = elapsed(lnch.start, lnch.stop)
 
         if format == :csv
-            println(io, "$kernel,$(1_000_000*elapsed(lnch.start, lnch.stop))")
+            println(io, "$kernel,$(1_000_000*t)")
+        elseif format == :summary
+            push!(get!(summary, kernel, Float64[]), t)
+        end
+    end
+
+    # footer
+    if format == :csv
+        println(io, "")
+    elseif format == :summary
+        for kernel in kernels
+            println("$kernel: ", round(1_000_000*median(summary[kernel]), 2), "us")
         end
     end
 end
