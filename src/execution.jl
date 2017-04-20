@@ -137,7 +137,7 @@ function emit_cudacall(func, id, dims, shmem, stream, types, args)
         error("cannot pass objects that don't fit in registers to CUDA functions")
 
     return quote
-        Profile.@instr_launch $id begin
+        Profile.@instr_launch $id $stream begin
             cudacall($func, $dims[1], $dims[2], $shmem, $stream, Tuple{$(types...)}, $(args...))
         end
     end

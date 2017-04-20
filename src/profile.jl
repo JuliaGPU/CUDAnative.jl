@@ -89,21 +89,21 @@ end
 
 ## instrumentation
 
-macro instr_launch(kernel, ex)
+macro instr_launch(kernel, stream, ex)
     quote
         # tic
         if enabled[]
             lnch = Launch()
             push!(launches, ($(QuoteNode(kernel)), lnch))
             nvprof_enabled[] && start_nvprof()
-            record(lnch.start)
+            record(lnch.start, $(esc(stream)))
         end
 
         $(esc(ex))
 
         # toc
         if enabled[]
-            record(lnch.stop)
+            record(lnch.stop, $(esc(stream)))
         end
     end
 end
