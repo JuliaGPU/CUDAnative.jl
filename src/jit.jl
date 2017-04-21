@@ -148,6 +148,8 @@ function link_libdevice!(mod::LLVM.Module, cap::VersionNumber)
 
         if haskey(ENV, "NVVMIR_LIBRARY_DIR")
             dirs = [ENV["NVVMIR_LIBRARY_DIR"]]
+        elseif haskey(ENV, "CUDA_HOME")
+            dirs = [joinpath(ENV["CUDA_HOME"], "nvvm", "libdevice")]
         else
             dirs = ["/usr/lib/nvidia-cuda-toolkit/libdevice",
                     "/usr/local/cuda/nvvm/libdevice",
