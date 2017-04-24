@@ -129,7 +129,7 @@ function emit_allocations(args, codegen_types, call_types)
     return kernel_allocations, args
 end
 
-function emit_cudacall(func, dims, shmem, stream, types, args)
+function emit_cudacall(func, id, dims, shmem, stream, types, args)
     # TODO: can we handle non-isbits types?
     all(t -> isbits(t) && sizeof(t) > 0, types) ||
         error("can only pass bitstypes of size > 0 to CUDA kernels")
@@ -137,7 +137,9 @@ function emit_cudacall(func, dims, shmem, stream, types, args)
         error("cannot pass objects that don't fit in registers to CUDA functions")
 
     return quote
-        cudacall($func, $dims[1], $dims[2], $shmem, $stream, Tuple{$(types...)}, $(args...))
+        Profile.@instr_launch $id $stream begin
+            cudacall($func, $dims[1], $dims[2], $shmem, $stream, Tuple{$(types...)}, $(args...))
+        end
     end
 end
 
@@ -206,7 +208,8 @@ const func_cache = Dict{UInt, CuFunction}()
     call_types = map(x->x[2], filter(x->x[1], zip(concrete, call_types)))
     arg_exprs  = map(x->x[2], filter(x->x[1], zip(concrete, arg_exprs)))
 
-    kernel_call = emit_cudacall(cuda_fun, :(dims), :(shmem), :(stream),
+    kernel_call = emit_cudacall(cuda_fun, func.name.mt.name,
+                                :(dims), :(shmem), :(stream),
                                 call_types, arg_exprs)
 
     quote
