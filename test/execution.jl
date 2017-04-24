@@ -257,4 +257,39 @@ end
 
 ############################################################################################
 
+@testset "@narrow" begin
+
+@eval search_code(ex::Expr, val) = sum(map(arg->search_code(arg,val), ex.args))
+@eval search_code(ex, val) = ex===val ? 1 : 0
+
+code = @macroexpand @narrow32 function ()
+    1 + 2.0
+end
+
+@test search_code(code, 1) == 0
+@test search_code(code, Int32(1)) == 1
+@test search_code(code, 2.0) == 0
+@test search_code(code, Float32(2.0)) == 1
+
+@test UInt32(1) == @narrow32 UInt(1)
+@test Int32(-1) == @narrow32 Int(-1)
+
+@test 1-2     == @narrow32 1-2
+@test 1000÷-2 == @narrow32 1000÷-2
+
+# bug: don't rewrite curly
+# FIXME: this does not break with Array?
+@narrow32 function exec_narrow_curly{T}(::CuDeviceArray{T,1}) end
+
+# bug: escape properly
+@eval module NarrowModule
+using CUDAnative
+@narrow32 function foo() end
+end
+NarrowModule.foo()
+
+end
+
+############################################################################################
+
 end
