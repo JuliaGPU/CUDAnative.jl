@@ -277,20 +277,25 @@ function check_kernel(func::ANY, tt::ANY)
 end
 
 # Main entry-point for compiling a Julia function + argtypes to a callable CUDA function
-function cufunction(dev::CuDevice, func::ANY, types::ANY)
+cufunction(dev::CuDevice, func, types) = cufunction(capability(dev), func, types)
+function cufunction(cap::VersionNumber, func::ANY, types::ANY)
+    (module_asm, module_entry) = cufunction_compile(cap, func, types)
+    (cuda_fun, cuda_mod) = cufunction_create(module_asm, module_entry)
+end
+function cufunction_compile(cap::VersionNumber, func::ANY, types::ANY)
     @assert isa(func, Core.Function)
     tt = Base.to_tuple_type(types)
     check_kernel(func, tt)
 
     # select a capability level
-    dev_cap = capability(dev)
-    compat_caps = filter(cap -> cap <= dev_cap, supported_capabilities)
+    compat_caps = filter(candidate_cap -> candidate_cap <= cap, supported_capabilities)
     isempty(compat_caps) &&
-        error("Device capability v$dev_cap not supported by available toolchain")
+        error("Device capability v$cap not supported by available toolchain")
     cap = maximum(compat_caps)
 
-    (module_asm, module_entry) = compile_function(func, tt, cap)
-
+    return compile_function(func, tt, cap)
+end
+function cufunction_create(module_asm::String, module_entry::String)
     # enable debug options based on Julia's debug setting
     jit_options = Dict{CUDAdrv.CUjit_option,Any}()
     if DEBUG || Base.JLOptions().debug_level >= 1
@@ -300,6 +305,7 @@ function cufunction(dev::CuDevice, func::ANY, types::ANY)
         # TODO: detect cuda-gdb
         jit_options[CUDAdrv.GENERATE_DEBUG_INFO] = true
     end
+
     cuda_mod = CuModule(module_asm, jit_options)
     cuda_fun = CuFunction(cuda_mod, module_entry)
 

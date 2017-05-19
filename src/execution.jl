@@ -219,6 +219,99 @@ const func_cache = Dict{UInt, CuFunction}()
     end
 end
 
+# alternatively, users can explicitly precompile kernels
+if is_linux()
+    const func_cache_dir = joinpath(get(ENV, "XDG_CACHE_HOME", joinpath(homedir(), ".cache")),
+                                    "CUDAnative.jl")
+else
+    const func_cache_dir = joinpath(tempdir(), "CUDAnative.jl")
+end
+function precompile(func::ANY, types::ANY)
+    @assert typeof(types) <: Tuple
+    precomp_key = hash(tuple(typeof(func), types...))
+
+    # details about the code
+    meth = which(func, types)
+    source = String(meth.file)
+    line = meth.line
+
+    # details about the hardware
+    ctx = CuCurrentContext()
+    dev = device(ctx)
+    cap = capability(dev)
+
+    # generate a hash uniquely identifying this function instance
+    isdir(func_cache_dir) || mkpath(func_cache_dir)
+    cache_id = hash((meth.name, types, source, line))
+    cache_file = joinpath(func_cache_dir, "$(meth.name).$(cache_id).bin")
+
+    # as we cannot interface properly with the precompile logic, apply some heuristics
+    if Base.JLOptions().use_compilecache == 0
+        cache_valid = false
+    elseif isfile(cache_file)
+        cache_valid = true
+    else
+        info("Precompiling $func($(join(types, ", "))).")
+        cache_valid = false
+    end
+
+    # check some mtimes
+    if cache_valid
+        cache_mtime = stat(cache_file).mtime
+
+        # julia binary
+        julia = Base.julia_cmd().exec[1]
+        julia_mtime = stat(julia).mtime
+
+        # julia system image
+        sysimg = map(arg->arg[3:end],
+                     filter(arg->startswith(arg, "-J"),
+                            Base.julia_cmd().exec))[1]
+        sysimg_mtime = stat(julia).mtime
+
+        # source file containing function
+        source_mtime = stat(source).mtime
+
+        # packages
+        function package_mtime(package)
+            package_cache_file = joinpath(Base.LOAD_CACHE_PATH[1], "$package.ji")
+            isfile(package_cache_file) ? stat(package_cache_file).mtime : 0
+        end
+        packages_mtime = package_mtime.(["CUDAnative", "LLVM"])
+
+        if Base.max(julia_mtime, sysimg_mtime, source_mtime, packages_mtime...) > cache_mtime
+            info("Recompiling stale cache file $cache_file for $func($(join(types, ", "))).")
+            cache_valid = false
+        end
+    end
+
+    # compile & cache
+    if cache_valid
+        open(cache_file, "r") do f
+            module_asm = deserialize(f)
+            module_entry = deserialize(f)
+        end
+    else
+        (module_asm, module_entry) = cufunction_compile(cap, func, types)
+        open(cache_file, "w") do f
+            serialize(f, module_asm)
+            serialize(f, module_entry)
+        end
+    end
+
+    # insert into the function cache for at-cuda
+    # NOTE: this has to exactly match what at-cuda does
+    key = hash((precomp_key, ctx))
+    if (haskey(func_cache, key))
+        cuda_fun = func_cache[key]
+    else
+        cuda_fun, _ = cufunction(device(ctx), func, types)
+        func_cache[key] = cuda_fun
+    end
+
+    return cuda_fun
+end
+
 """
 Return the nearest number of threads that is a multiple of the warp size of a device:
 
