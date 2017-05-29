@@ -1,3 +1,6 @@
+import Sugar
+using Sugar: LazyMethod
+
 function rewrite_expr_cu(m::LazyMethod, expr)
     was_rewritten = false
     body = first(Sugar.replace_expr(expr) do expr
@@ -6,11 +9,7 @@ function rewrite_expr_cu(m::LazyMethod, expr)
             if head == :call
                 func = args[1]
                 types_array = map(args[2:end]) do x
-                    t = Sugar.expr_type(m, x)
-                    if t == Any
-                        error("Found type any in Expr: $expr. Make sure your code is type stable")
-                    end
-                    t
+                    Sugar.expr_type(m, x)
                 end
                 types = (types_array...,)
                 f = Sugar.resolve_func(m, func)
@@ -50,8 +49,15 @@ function rewrite_for_cudanative(f, types)
     m = LazyMethod((f, types))
     # if is a Julia intrinsic, stop
     Sugar.isintrinsic(m) && return f, false
+    isa(Sugar.getfunction(m), DataType) && return f, false
     # otherwise go through the source and rewrite function calls recursevely the source!
-    expr = Expr(:block, Sugar.get_ast(code_typed, m.signature...)...)
+   try
+        expr = Sugar.sugared(code_typed, m.signature...)
+    catch e
+        # TODO warn or explicitely filter out errors that are expected?
+        # E.g. it can't get the ast for some stuff like Base.cconvert(DataType, x)
+        return f, false
+    end
     body, was_rewritten = rewrite_expr_cu(m, expr)
     if was_rewritten
         rewritten_func_expr = Sugar.get_func_expr(m, body, gensym(string("cu_", fsym)))

@@ -24,6 +24,7 @@ include(joinpath("device", "array.jl"))
 include(joinpath("device", "intrinsics.jl"))
 include(joinpath("device", "libdevice.jl"))
 
+include("rewrite_intrinsics.jl")
 include("jit.jl")
 include("profile.jl")
 include("execution.jl")
