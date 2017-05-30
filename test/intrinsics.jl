@@ -6,7 +6,7 @@
     buf = CuArray{Float32}(1)
 
     @eval function kernel_math_log10(a, i)
-        a[1] = CUDAnative.log10(i)
+        a[1] = log10(i)
         return nothing
     end
 

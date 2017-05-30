@@ -52,8 +52,19 @@ function rewrite_for_cudanative(f, types)
     isa(Sugar.getfunction(m), DataType) && return f, false
     # otherwise go through the source and rewrite function calls recursevely the source!
    try
-        expr = Sugar.sugared(code_typed, m.signature...)
+        expr = Sugar.sugared(m.signature..., code_typed)
+        sparams = Sugar.get_static_parameters(m)
+        if !isempty(sparams)
+            expr = first(Sugar.replace_expr(expr) do expr
+                if isa(expr, Expr) && expr.head == :static_parameter
+                    true, sparams[expr.args[1]]
+                else
+                    false, expr
+                end
+            end)
+        end
     catch e
+        #warn(e)
         # TODO warn or explicitely filter out errors that are expected?
         # E.g. it can't get the ast for some stuff like Base.cconvert(DataType, x)
         return f, false
