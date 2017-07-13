@@ -131,15 +131,17 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
         end
     end
 
-    # generate a wrapper to fix the kernel calling convention
+    # generate a kernel wrapper to fix & improve argument passing
     entry_f = get(functions(mod), entry_fn)
     if kernel
         entry_ft = eltype(llvmtype(entry_f))
         @assert return_type(entry_ft) == LLVM.VoidType()
+
+        # generate the wrapper function type & def
         function wrapper_type(julia_t, codegen_t)
-            if isa(codegen_t, LLVM.PointerType) && !isa(julia_t, Ptr)
+            if isa(codegen_t, LLVM.PointerType) && !(julia_t <: Ptr)
                 # we didn't specify a pointer, but codegen passes one anyway.
-                # make the wrapper accept a value type instead.
+                # make the wrapper accept the underlying value instead.
                 return eltype(codegen_t)
             else
                 return codegen_t
@@ -151,6 +153,8 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
         wrapper_fn = "ptxcall" * entry_fn[6:end]
         wrapper_ft = LLVM.FunctionType(LLVM.VoidType(), wrapper_types)
         wrapper_f = LLVM.Function(mod, wrapper_fn, wrapper_ft)
+
+        # emit IR performing the "conversions"
         Builder() do builder
             entry = BasicBlock(wrapper_f, "entry")
             position!(builder, entry)
