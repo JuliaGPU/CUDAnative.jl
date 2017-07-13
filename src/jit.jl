@@ -139,7 +139,10 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
 
         # generate the wrapper function type & def
         function wrapper_type(julia_t, codegen_t)
-            if isa(codegen_t, LLVM.PointerType) && !(julia_t <: Ptr)
+            if !julia_t.mutable && sizeof(julia_t) == 0
+                # ghost type, ignored by the compiler
+                return codegen_t
+            elseif isa(codegen_t, LLVM.PointerType) && !(julia_t <: Ptr)
                 # we didn't specify a pointer, but codegen passes one anyway.
                 # make the wrapper accept the underlying value instead.
                 return eltype(codegen_t)
