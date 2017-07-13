@@ -140,29 +140,10 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
             if isa(codegen_t, LLVM.PointerType) && !isa(julia_t, Ptr)
                 # we didn't specify a pointer, but codegen passes one anyway.
                 # make the wrapper accept a value type instead.
-                return equally_sized_type(julia_t)
+                return eltype(codegen_t)
             else
                 return codegen_t
             end
-        end
-        function equally_sized_type(t)
-            # we don't want to bother lowering Julia types to their exact LLVM counterpart,
-            # so just lower to an equally-sized type consisting of a bunch of integers.
-            sz = Core.sizeof(t)
-            if sz % 8 == 0
-                typ = LLVM.Int64Type()
-                num = sz ÷ 8
-            elseif sz % 4 == 0
-                typ = LLVM.Int32Type()
-                num = sz ÷ 4
-            elseif sz % 2 == 0
-                typ = LLVM.Int16Type()
-                num = sz ÷ 2
-            else
-                typ = LLVM.Int8Type()
-                num = sz
-            end
-            return LLVM.ArrayType(typ, num)
         end
         wrapper_types = LLVM.LLVMType[wrapper_type(julia_t, codegen_t)
                                       for (julia_t, codegen_t)
