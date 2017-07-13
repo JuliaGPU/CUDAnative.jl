@@ -137,12 +137,12 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
         entry_ft = eltype(llvmtype(entry_f))
         @assert return_type(entry_ft) == LLVM.VoidType()
 
+        # filter out ghost types, which don't occur in the LLVM function signatures
+        julia_types = filter(t->t.mutable || sizeof(t) > 0, tt.parameters)
+
         # generate the wrapper function type & def
         function wrapper_type(julia_t, codegen_t)
-            if !julia_t.mutable && sizeof(julia_t) == 0
-                # ghost type, ignored by the compiler
-                return codegen_t
-            elseif isa(codegen_t, LLVM.PointerType) && !(julia_t <: Ptr)
+            if isa(codegen_t, LLVM.PointerType) && !(julia_t <: Ptr)
                 # we didn't specify a pointer, but codegen passes one anyway.
                 # make the wrapper accept the underlying value instead.
                 return eltype(codegen_t)
@@ -152,7 +152,7 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
         end
         wrapper_types = LLVM.LLVMType[wrapper_type(julia_t, codegen_t)
                                       for (julia_t, codegen_t)
-                                      in zip(tt.parameters, parameters(entry_ft))]
+                                      in zip(julia_types, parameters(entry_ft))]
         wrapper_fn = "ptxcall" * entry_fn[6:end]
         wrapper_ft = LLVM.FunctionType(LLVM.VoidType(), wrapper_types)
         wrapper_f = LLVM.Function(mod, wrapper_fn, wrapper_ft)
@@ -168,7 +168,7 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
             codegen_types = parameters(entry_ft)
             wrapper_params = parameters(wrapper_f)
             for (julia_t, codegen_t, wrapper_t, wrapper_param) in
-                zip(tt.parameters, codegen_types, wrapper_types, wrapper_params)
+                zip(julia_types, codegen_types, wrapper_types, wrapper_params)
                 if codegen_t != wrapper_t
                     # the wrapper argument doesn't match the kernel parameter type.
                     # this only happens when codegen wants to pass a pointer.
