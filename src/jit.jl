@@ -138,7 +138,7 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
         @assert return_type(entry_ft) == LLVM.VoidType()
 
         # filter out ghost types, which don't occur in the LLVM function signatures
-        julia_types = filter(t->t.mutable || sizeof(t) > 0, tt.parameters)
+        julia_types = filter(dt->!isghosttype(dt), tt.parameters)
 
         # generate the wrapper function type & def
         function wrapper_type(julia_t, codegen_t)

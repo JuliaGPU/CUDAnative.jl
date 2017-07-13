@@ -116,10 +116,10 @@ for fname in [:code_lowered, :code_typed, :code_warntype, :code_llvm, :code_ptx,
 
     @eval begin
         function $fname_wrapper(func, types)
-            _, codegen_types, _ =
+            _, arg_types =
                 convert_arguments(fill(Symbol(), length(types.parameters)),
                                   types.parameters)
-            $fname(func, codegen_types)
+            $fname(func, arg_types)
         end
 
         @doc $"""
