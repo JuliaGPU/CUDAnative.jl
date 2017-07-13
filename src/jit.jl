@@ -181,8 +181,8 @@ function irgen(func::ANY, tt::ANY; kernel::Bool=false)
             ret!(builder)
         end
 
-        # TODO: remove old function
         push!(function_attributes(entry_f), EnumAttribute("alwaysinline"))
+        linkage!(entry_f, LLVM.API.LLVMInternalLinkage)
         entry_f = wrapper_f
     end
         
