@@ -34,10 +34,10 @@ for defaults to the current active device's capability, or v"2.0" if there is no
 context.
 """
 function code_llvm(io::IO, func::ANY, types::ANY=Tuple;
-                   optimize::Bool=true, dump_module::Bool=true,
-                   cap::VersionNumber=current_capability())
+                   optimize::Bool=true, dump_module::Bool=false,
+                   cap::VersionNumber=current_capability(), kernel::Bool=false)
     tt = Base.to_tuple_type(types)
-    mod, entry = irgen(func, tt)
+    mod, entry = irgen(func, tt; kernel=kernel)
     if optimize
         optimize!(mod, cap)
     end
