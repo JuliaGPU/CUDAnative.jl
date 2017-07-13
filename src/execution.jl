@@ -85,11 +85,11 @@ function actual_types(argtype::DataType)
         # pointerfree objects with a layout can be used on the GPU
         cgtype = argtype
         # but the ABI might require them to be passed by pointer
-        if isbitstype(argtype)
+        # if isbitstype(argtype)
             calltype = argtype
-        else
-            calltype = Ptr{argtype}
-        end
+        # else
+        #     calltype = Ptr{argtype}
+        # end
     else
         error("don't know how to handle argument of type $argtype")
     end
@@ -129,8 +129,8 @@ function emit_cudacall(func, dims, shmem, stream, types, args)
     # TODO: can we handle non-isbits types?
     all(t -> isbits(t) && sizeof(t) > 0, types) ||
         error("can only pass bitstypes of size > 0 to CUDA kernels")
-    any(t -> sizeof(t) > 8, types) &&
-        error("cannot pass objects that don't fit in registers to CUDA functions")
+    # any(t -> sizeof(t) > 8, types) &&
+    #     error("cannot pass objects that don't fit in registers to CUDA functions")
 
     return quote
         Profile.@launch begin

@@ -34,9 +34,10 @@ for defaults to the current active device's capability, or v"2.0" if there is no
 context.
 """
 function code_llvm(io::IO, func::ANY, types::ANY=Tuple;
-                   optimize::Bool=true, dump_module::Bool=false,
+                   optimize::Bool=true, dump_module::Bool=true,
                    cap::VersionNumber=current_capability())
-    mod, entry = irgen(func, types)
+    tt = Base.to_tuple_type(types)
+    mod, entry = irgen(func, tt)
     if optimize
         optimize!(mod, cap)
     end
@@ -130,6 +131,7 @@ for fname in [:code_lowered, :code_typed, :code_warntype, :code_llvm, :code_ptx,
         """ macro $(fname)(ex0)
             if ex0.head == :macrocall
                 # @cuda (...) f()
+                # TODO: pass kernel=true to irgen here
                 if Base.VERSION >= v"0.7.0-DEV.357"
                     ex0 = ex0.args[4]
                 else
