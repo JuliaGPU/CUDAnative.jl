@@ -236,11 +236,9 @@ function link_libdevice!(mod::LLVM.Module, cap::VersionNumber)
         push!(metadata(mod), "nvvm-reflect-ftz",
               MDNode([ConstantInt(Int32(1))]))
 
-        # FIXME: we shouldn't queue this manually,
-        #        but use the TM's `addEarlyAsPossiblePasses` instead
-
         # 6. Run standard optimization pipeline
-        always_inliner!(pm)
+        #
+        #    see `optimize!`
 
         run!(pm, mod)
     end
