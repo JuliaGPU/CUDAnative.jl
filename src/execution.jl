@@ -9,63 +9,17 @@ using Base.Iterators: filter
 # Auxiliary
 #
 
-# Determine which type to pre-convert objects to for use on a CUDA device.
-#
-# The resulting object type will be used as a starting point to determine the final argument
-# types. This is different from `cconvert` in that we don't know which type to convert to.
-function convert_type(t)
-    # NOTE: this conversion was originally intended to be a user-extensible interface,
-    #       a la cconvert (look for cudaconvert in f1e592e61d6898869b918331e3e625292f4c8cab).
-    #
-    #       however, the generated function behind @cuda isn't allowed to call overloaded
-    #       functions (only pure ones), and also won't be able to see functions defined
-    #       after the generated function's body (see JuliaLang/julia#19942).
-
-    # Pointer handling
-    if t <: DevicePtr
-        return Ptr{t.parameters...}
-    elseif t <: Ptr
-        throw(InexactError())
+function todevice(x::T) where T
+    if T.layout == C_NULL || !Base.datatype_pointerfree(T)
+        error("don't know how to handle argument of type $argtype")
     end
-
-    # Array types
-    if t <: CuArray
-        return CuDeviceArray{t.parameters...}
-    end
-
-    return t
+    return x
 end
 
-# Convert the arguments to a kernel function to their CUDA representation, and figure out
-# what types to specialize the kernel function for.
-function convert_arguments(args, types)
-    argtypes = DataType[types...]
-    argexprs = Union{Expr,Symbol}[args...]
+todevice(x::DevicePtr{T}) where T = Base.unsafe_convert(Ptr{T}, x)
+todevice(x::Ptr) = throw(InexactError())
 
-    # convert types to their CUDA representation
-    for i in 1:length(argexprs)
-        t = argtypes[i]
-        ct = convert_type(t)
-        if ct != t
-            argtypes[i] = ct
-            if ct <: Ptr
-                argexprs[i] = :( Base.unsafe_convert($ct, $(argexprs[i])) )
-            else
-                argexprs[i] = :( convert($ct, $(argexprs[i])) )
-            end
-        end
-    end
-
-    # NOTE: DevicePtr's should have disappeared after this point
-
-    for argtype in argtypes
-        if argtype.layout == C_NULL || !Base.datatype_pointerfree(argtype)
-            error("don't know how to handle argument of type $argtype")
-        end
-    end
-
-    return argexprs, argtypes
-end
+todevice(x::CuArray{T,N}) where {T,N} = convert(CuDeviceArray{T,N}, x)
 
 function emit_cudacall(func, dims, shmem, stream, types, args)
     # TODO: can we handle non-isbits types?
@@ -126,7 +80,7 @@ macro cuda(config::Expr, callexpr::Expr)
     stream = length(config.args)==4 ? esc(pop!(config.args)) : :(CuDefaultStream())
     shmem  = length(config.args)==3 ? esc(pop!(config.args)) : :(0)
     dims = esc(config)
-    return :(generated_cuda($dims, $shmem, $stream, $(map(esc, callexpr.args)...)))
+    return :(generated_cuda($dims, $shmem, $stream, todevice.(($(map(esc, callexpr.args)...),))...))
 end
 
 # Compile and execute a CUDA kernel from a Julia function
@@ -135,7 +89,7 @@ const compilecache = Dict{UInt, CuFunction}()
 @generated function generated_cuda{F<:Core.Function,N}(dims::Tuple{CuDim, CuDim}, shmem, stream,
                                                        func::F, args::Vararg{Any,N})
     arg_exprs = [:( args[$i] ) for i in 1:N]
-    arg_exprs, arg_types = convert_arguments(arg_exprs, args)
+    arg_types = args
 
     # compile the function, if necessary
     @gensym cuda_fun
