@@ -290,7 +290,7 @@ if capability(dev) >= v"3.0"
 @testset "shuffle" begin
 
 n = 14
-types = [Int32, Int64, Float32, Float64]
+types = [Int32, Int64, Int128, Float32, Float64]
 
 @testset "down" begin
     @eval function kernel_shuffle_down{T}(d::CuDeviceArray{T}, n)

@@ -1,79 +1,157 @@
 # Warp Shuffle (B.14)
 
+# TODO: does not work on sub-word (ie. Int16) or non-word divisible sized types
+
 # TODO: should shfl_idx conform to 1-based indexing?
 
-# narrow
-for typ in ((Int32,   :i32, :i32),
-            (UInt32,  :i32, :i32),
-            (Float32, :f32, :float))
-    jl, intr, llvm = typ
+# TODO: these functions should dispatch based on the actual warp size
+const ws = Int32(32)
 
-    # TODO: these functions should dispatch based on the actual warp size
-    ws = Int32(32)
 
-    # NOTE: CUDA C disagrees with PTX on how shuffles are called
-    for (fname, mode, mask) in ((:shfl_up,   :up,   UInt32(0x00)),
-                                (:shfl_down, :down, UInt32(0x1f)),
-                                (:shfl_xor,  :bfly, UInt32(0x1f)),
-                                (:shfl,      :idx,  UInt32(0x1f)))
-        pack_expr = :((($ws - convert(UInt32, width)) << 8) | $mask)
-        intrinsic = Symbol("llvm.nvvm.shfl.$mode.$intr")
+# single-word
 
-        @eval begin
-            export $fname
-            @inline $fname(val::$jl, srclane::Integer, width::Integer=$ws) =
-                ccall($"$intrinsic", llvmcall, $jl,
-                      ($jl, UInt32, UInt32), val, convert(UInt32, srclane), $pack_expr)
-        end
+# NOTE: CUDA C disagrees with PTX on how shuffles are called
+for (name, mode, mask) in ((:shfl_up,   :up,   UInt32(0x00)),
+                           (:shfl_down, :down, UInt32(0x1f)),
+                           (:shfl_xor,  :bfly, UInt32(0x1f)),
+                           (:shfl,      :idx,  UInt32(0x1f)))
+    pack_expr = :((($ws - convert(UInt32, width)) << 8) | $mask)
+    intrinsic = Symbol("llvm.nvvm.shfl.$mode.i32")
 
+    @eval begin
+        export $name
+        @inline $name(val::UInt32, srclane::Integer, width::Integer=$ws) =
+            ccall($"$intrinsic", llvmcall, UInt32,
+                  (UInt32, UInt32, UInt32), val, convert(UInt32, srclane), $pack_expr)
     end
 end
 
-@inline decode(val::UInt64) = trunc(UInt32,  val & 0x00000000ffffffff),
-                              trunc(UInt32, (val & 0xffffffff00000000)>>32)
-
-@inline encode(x::UInt32, y::UInt32) = UInt64(x) | UInt64(y)<<32
-
-# wide
-# NOTE: we only reuse the i32 shuffle, does it make any difference using eg. f32 shuffle for f64 values?
-for typ in (Int64, UInt64, Float64)
-    # TODO: these functions should dispatch based on the actual warp size
-    ws = Int32(32)
-
-    for mode in (:up, :down, :bfly, :idx)
-        fname = Symbol("shfl_$mode")
-        @eval begin
-            export $fname
-            @inline function $fname(val::$typ, srclane::Integer, width::Integer=$ws)
-                x,y = decode(reinterpret(UInt64, val))
-                x = $fname(x, srclane, width)
-                y = $fname(y, srclane, width)
-                reinterpret($typ, encode(x,y))
-            end
-        end
-    end
+## synonyms
+# TODO: these reinterpret and reuse the i32 shuffle, should we use the f32 shuffle?
+for typ in (Int32, Float32),
+    name in [:shfl_up, :shfl_down, :shfl_xor, :shfl]
+    @eval @inline $name(val::$typ, srclane, width::Integer=$ws) =
+        reinterpret($typ, $name(reinterpret(UInt32, val), srclane, width))
 end
+
+
+# multi-word
+
+## extract a word from a value
+@generated function extract_word(val, ::Val{i}) where {i}
+    T_int32 = LLVM.Int32Type(jlctx[])
+
+    bytes = Core.sizeof(val)
+    T_val = convert(LLVMType, val)
+    T_int = LLVM.IntType(8*bytes, jlctx[])
+
+    # create function
+    llvmf = create_llvmf(T_int32, [T_val])
+    mod = LLVM.parent(llvmf)
+
+    # generate IR
+    Builder(jlctx[]) do builder
+        entry = BasicBlock(llvmf, "entry", jlctx[])
+        position!(builder, entry)
+
+        equiv = bitcast!(builder, parameters(llvmf)[1], T_int)
+        shifted = lshr!(builder, equiv, LLVM.ConstantInt(T_int, 32*(i-1)))
+        # extracted = and!(builder, shifted, 2^32-1)
+        extracted = trunc!(builder, shifted, T_int32, "word$i")
+
+        ret!(builder, extracted)
+    end
+
+    call_llvmf(llvmf, UInt32, Tuple{val}, :( (val,) ))
+end
+
+## insert a word into a value
+@generated function insert_word(val, word::UInt32, ::Val{i}) where {i}
+    T_int32 = LLVM.Int32Type(jlctx[])
+
+    bytes = Core.sizeof(val)
+    T_val = convert(LLVMType, val)
+    T_int = LLVM.IntType(8*bytes, jlctx[])
+
+    # create function
+    llvmf = create_llvmf(T_val, [T_val, T_int32])
+    mod = LLVM.parent(llvmf)
+
+    # generate IR
+    Builder(jlctx[]) do builder
+        entry = BasicBlock(llvmf, "entry", jlctx[])
+        position!(builder, entry)
+
+        equiv = bitcast!(builder, parameters(llvmf)[1], T_int)
+        ext = zext!(builder, parameters(llvmf)[2], T_int)
+        shifted = shl!(builder, ext, LLVM.ConstantInt(T_int, 32*(i-1)))
+        inserted = or!(builder, equiv, shifted)
+        orig = bitcast!(builder, inserted, T_val)
+
+        ret!(builder, orig)
+    end
+
+    call_llvmf(llvmf, val, Tuple{val, UInt32}, :( (val, word) ))
+end
+
+## generic shuffle working on individual words
+@generated function _shuffle(op::Function, val::Real, srclane::Integer, width::Integer=ws)
+    ex = quote
+        Base.@_inline_meta
+    end
+
+    # disassemble into words
+    words = Symbol[]
+    for i in 1:Core.sizeof(val)÷4
+        word = Symbol("word$i")
+        push!(ex.args, :( $word = extract_word(val, Val{$i}()) ))
+        push!(words, word)
+    end
+
+    # shuffle
+    for word in words
+        push!(ex.args, :( $word = op($word, srclane, width)) )
+    end
+
+    # reassemble
+    push!(ex.args, :( out = zero(val) ))
+    for (i,word) in enumerate(words)
+        push!(ex.args, :( out = insert_word(out, $word, Val{$i}()) ))
+    end
+
+    push!(ex.args, :( out ))
+    return ex
+end
+
+## define entry-point functions
+for name in [:shfl_up, :shfl_down, :shfl_xor, :shfl]
+    @eval $name(val::Real, srclane, width::Integer=$ws) =
+        _shuffle($name, val, srclane, width)
+end
+
+
+# documentation
 
 @doc """
-    shfl_idx(val, src::Integer, width::Integer=32)
+    shfl_idx(val::Real, src::Integer, width::Integer=32)
 
 Shuffle a value from a directly indexed lane `src`
 """ shfl
 
 @doc """
-    shfl_up(val, src::Integer, width::Integer=32)
+    shfl_up(val::Real, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane with lower ID relative to caller.
 """ shfl_up
 
 @doc """
-    shfl_down(val, src::Integer, width::Integer=32)
+    shfl_down(val::Real, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane with higher ID relative to caller.
 """ shfl_down
 
 @doc """
-    shfl_xor(val, src::Integer, width::Integer=32)
+    shfl_xor(val::Real, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane based on bitwise XOR of own lane ID.
 """ shfl_xor
