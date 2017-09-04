@@ -155,3 +155,15 @@ Shuffle a value from a lane with higher ID relative to caller.
 
 Shuffle a value from a lane based on bitwise XOR of own lane ID.
 """ shfl_xor
+
+
+@generated function shfl_down(
+        val::T, srclane::Integer, width::Integer = Int32(32)
+    ) where T
+    @assert isbits(T) "shuffle only supported for isbits types"
+    constr = Expr(:new, T)
+    for fname in fieldnames(T)
+        push!(constr.args, :(shfl_down(getfield(val, $(QuoteNode(fname))), srclane, width)))
+    end
+    constr
+end
