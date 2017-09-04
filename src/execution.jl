@@ -104,7 +104,6 @@ const compilecache = Dict{UInt, CuFunction}()
         if haskey(compilecache, key2)
             cuda_fun = compilecache[key2]
         else
-            func, rewritten = CUDAnative.rewrite_for_cudanative(func, $codegen_types)
             cuda_fun, _ = cufunction(device(ctx), func, Tuple{$arg_types...})
             compilecache[key2] = cuda_fun
         end

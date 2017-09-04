@@ -11,8 +11,8 @@ function rewrite_expr_cu(m::LazyMethod, expr)
                 types_array = map(args[2:end]) do x
                     Sugar.expr_type(m, x)
                 end
-                types = (types_array...,)
                 f = Sugar.resolve_func(m, func)
+                types = (types_array...,)
                 func, _was_rewritten = rewrite_for_cudanative(f, types)
                 # function arguments have to be rewritten as well!
                 args_rewritten = false
@@ -46,12 +46,12 @@ function rewrite_for_cudanative(f, types)
         end
     end
     # it's not a CUDAnative intrinsic, so now we need to check it's source for intrinsics
-    m = LazyMethod((f, types))
+    m = LazyMethod(f, types)
     # if is a Julia intrinsic, stop
     Sugar.isintrinsic(m) && return f, false
     isa(Sugar.getfunction(m), DataType) && return f, false
     # otherwise go through the source and rewrite function calls recursevely the source!
-   try
+    expr = try
         expr = Sugar.sugared(m.signature..., code_typed)
         sparams = Sugar.get_static_parameters(m)
         if !isempty(sparams)
@@ -63,6 +63,7 @@ function rewrite_for_cudanative(f, types)
                 end
             end)
         end
+        expr
     catch e
         #warn(e)
         # TODO warn or explicitely filter out errors that are expected?
