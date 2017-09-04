@@ -8,7 +8,7 @@
 const ws = Int32(32)
 
 
-# single-word
+# single-word primitives
 
 # NOTE: CUDA C disagrees with PTX on how shuffles are called
 for (name, mode, mask) in ((:shfl_up,   :up,   UInt32(0x00)),
@@ -35,7 +35,7 @@ for typ in (Int32, Float32),
 end
 
 
-# multi-word
+# multi-word primitives (recurse into words)
 
 ## extract a word from a value
 @generated function extract_word(val, ::Val{i}) where {i}
@@ -94,8 +94,7 @@ end
     call_llvmf(llvmf, val, Tuple{val, UInt32}, :( (val, word) ))
 end
 
-## generic shuffle working on individual words
-@generated function _shuffle(op::Function, val::Real, srclane::Integer, width::Integer=ws)
+@generated function shuffle_primitive(op::Function, val, srclane::Integer, width::Integer)
     ex = quote
         Base.@_inline_meta
     end
@@ -123,47 +122,60 @@ end
     return ex
 end
 
-## define entry-point functions
+
+# aggregates (recurse into fields)
+
+@generated function shuffle_aggregate(op::Function, val::T, srclane::Integer, width::Integer) where T
+    ex = quote
+        Base.@_inline_meta
+    end
+
+    fields = fieldnames(T)
+    if isempty(fields)
+        push!(ex.args, :( shuffle_primitive(op, val, srclane, width) ))
+    else
+        ctor = Expr(:new, T)
+        for field in fields
+            push!(ctor.args, :( shuffle_aggregate(op, getfield(val, $(QuoteNode(field))),
+                                                  srclane, width) ))
+        end
+        push!(ex.args, ctor)
+    end
+
+    return ex
+end
+
+
+# entry-point functions
+
 for name in [:shfl_up, :shfl_down, :shfl_xor, :shfl]
-    @eval $name(val::Real, srclane, width::Integer=$ws) =
-        _shuffle($name, val, srclane, width)
+    @eval $name(val, srclane, width::Integer=$ws) =
+        shuffle_aggregate($name, val, srclane, width)
 end
 
 
 # documentation
 
 @doc """
-    shfl_idx(val::Real, src::Integer, width::Integer=32)
+    shfl_idx(val, src::Integer, width::Integer=32)
 
 Shuffle a value from a directly indexed lane `src`
 """ shfl
 
 @doc """
-    shfl_up(val::Real, src::Integer, width::Integer=32)
+    shfl_up(val, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane with lower ID relative to caller.
 """ shfl_up
 
 @doc """
-    shfl_down(val::Real, src::Integer, width::Integer=32)
+    shfl_down(val, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane with higher ID relative to caller.
 """ shfl_down
 
 @doc """
-    shfl_xor(val::Real, src::Integer, width::Integer=32)
+    shfl_xor(val, src::Integer, width::Integer=32)
 
 Shuffle a value from a lane based on bitwise XOR of own lane ID.
 """ shfl_xor
-
-
-@generated function shfl_down(
-        val::T, srclane::Integer, width::Integer = Int32(32)
-    ) where T
-    @assert isbits(T) "shuffle only supported for isbits types"
-    constr = Expr(:new, T)
-    for fname in fieldnames(T)
-        push!(constr.args, :(shfl_down(getfield(val, $(QuoteNode(fname))), srclane, width)))
-    end
-    constr
-end
