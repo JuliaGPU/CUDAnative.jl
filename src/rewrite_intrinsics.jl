@@ -1,17 +1,15 @@
 import Sugar
-using Sugar: LazyMethod
+using Sugar: LazyMethod, expr_type, resolve_func, similar_expr, replace_expr, getfunction, isintrinsic
 
 function rewrite_expr_cu(m::LazyMethod, expr)
     was_rewritten = false
-    body = first(Sugar.replace_expr(expr) do expr
+    body = first(replace_expr(expr) do expr
         if isa(expr, Expr)
             args, head = expr.args, expr.head
             if head == :call
                 func = args[1]
-                types_array = map(args[2:end]) do x
-                    Sugar.expr_type(m, x)
-                end
-                f = Sugar.resolve_func(m, func)
+                types_array = expr_type.(m, args[2:end])
+                f = resolve_func(m, func)
                 types = (types_array...,)
                 func, _was_rewritten = rewrite_for_cudanative(f, types)
                 # function arguments have to be rewritten as well!
@@ -22,7 +20,7 @@ function rewrite_expr_cu(m::LazyMethod, expr)
                     rewr
                 end
                 was_rewritten = _was_rewritten || args_rewritten || was_rewritten
-                return true, Sugar.similar_expr(expr, [func, fargs...])
+                return true, similar_expr(expr, [func, fargs...])
             end
         end
         false, expr
@@ -30,26 +28,25 @@ function rewrite_expr_cu(m::LazyMethod, expr)
     body, was_rewritten
 end
 
+
+print_exec(f, args...) = (println(args); f(args...))
 """
 Replaces recursively Julia Base functions which are defined as intrinsics in CUDAnative
 Returns the resulting function and a bool indicating, wether the function was rewritten.
 """
 function rewrite_for_cudanative(f, types)
-    fsym = Symbol(f)
-    # if defined in CUDAnative, but doesn't match the function passed in here
-    # The probability is very high, that this is a cudanative intrinsic
-    if isdefined(CUDAnative, fsym) && getfield(CUDAnative, fsym) != f
-        cu_f = getfield(CUDAnative, fsym)
+    # TODO cover all intrinsics
+    if f in (cos, sin, tan, max)
+        cu_f = getfield(CUDAnative, Symbol(f))
         # only if there is a method defined for the argument types
-        if !isempty(methods(cu_f, types))
-            return cu_f, true # replace it!
-        end
+        return cu_f, true # replace it!
+        #end
     end
     # it's not a CUDAnative intrinsic, so now we need to check it's source for intrinsics
     m = LazyMethod(f, types)
     # if is a Julia intrinsic, stop
-    Sugar.isintrinsic(m) && return f, false
-    isa(Sugar.getfunction(m), DataType) && return f, false
+    isintrinsic(m) && return f, false
+    isa(getfunction(m), DataType) && return f, false
     # otherwise go through the source and rewrite function calls recursevely the source!
     expr = try
         expr = Sugar.sugared(m.signature..., code_typed)
@@ -65,7 +62,7 @@ function rewrite_for_cudanative(f, types)
         end
         expr
     catch e
-        #warn(e)
+        warn(e)
         # TODO warn or explicitely filter out errors that are expected?
         # E.g. it can't get the ast for some stuff like Base.cconvert(DataType, x)
         return f, false

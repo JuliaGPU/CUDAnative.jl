@@ -389,6 +389,25 @@ end
     @test Array(d_a) == [0]
 end
 
+
+
+@testset "intrinsic rewrite" begin
+    @eval function test_intrins_recursive(a)
+        tan(a)
+    end
+    @eval function test_intrinsic_rewrite()
+        a, b = 1f0, 2f0
+        f = cos
+        sin(a) + max(a, b) + f(a) * test_intrins_recursive(a)
+        return
+    end
+    try
+        @cuda (1,2) test_intrinsic_rewrite()
+        @test true
+    catch e
+        @test false
+    end
+end
 end
 
 end
