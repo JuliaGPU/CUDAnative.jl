@@ -141,7 +141,7 @@ end
 # entry-point functions
 
 for name in [:shfl_up, :shfl_down, :shfl_xor, :shfl]
-    @eval $name(val, srclane, width::Integer=$ws) =
+    @eval @inline $name(val, srclane::Integer, width::Integer=$ws) =
         shuffle_aggregate($name, val, srclane, width)
 end
 
