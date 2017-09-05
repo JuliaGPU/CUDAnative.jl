@@ -1,7 +1,7 @@
 import Sugar
 using Sugar: LazyMethod, expr_type, resolve_func, similar_expr, replace_expr, getfunction, isintrinsic
 
-## intrinsic rewriting
+# intrinsic rewriting
 
 const intrinsic_map = Dict{Function, Function}(
     Base.sin    => CUDAnative.sin,
@@ -38,12 +38,11 @@ function rewrite_intrinsics(m::LazyMethod, expr)
     body, changed
 end
 
-function rewrite_intrinsics(f::Function, types)
+function rewrite_intrinsics(f, types)
     # rewrite the function itself
     if haskey(intrinsic_map, f)
         return intrinsic_map[f], true
     end
-
     # get the source and rewrite static parameters
     m = LazyMethod(f, types)
     # if is a Julia intrinsic, stop
@@ -70,13 +69,13 @@ function rewrite_intrinsics(f::Function, types)
     # rewrite the source
     body, changed = rewrite_intrinsics(m, expr)
     if changed
-        changed_func_expr = Sugar.get_func_expr(m, body, gensym(string("cu_", fsym)))
+        changed_func_expr = Sugar.get_func_expr(m, body, gensym(string("cu_", Symbol(f))))
         eval(changed_func_expr), true
     else
         f, false
     end
 end
-
+#
 # struct Test
 #     x::Float32
 #     Test() = new(sin(1f0))
@@ -91,9 +90,5 @@ end
 #     sin(a) + max(a, b) + f(a) * test_intrins_recursive(a)
 # end
 #
-# f, rewr = rewrite_for_cudanative(test_intrinsic_rewrite, ())
+# f, rewr = rewrite_intrinsics(test_intrinsic_rewrite, ())
 # f()
-#
-# function cu_Test()
-#     return (Test)((convert)(Main.Float32, (test)(1.0f0)))::Test
-# end
