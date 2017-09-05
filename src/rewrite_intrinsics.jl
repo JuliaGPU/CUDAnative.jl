@@ -46,7 +46,6 @@ function rewrite_intrinsics(f::Function, types)
     # get the source and rewrite static parameters
     m = LazyMethod(f, types)
     isintrinsic(m) && return f, false                   # don't rewrite Julia intrinsics
-    isa(getfunction(m), DataType) && return f, false    # don't rewrite constructors
     expr = try
         expr = Sugar.sugared(m.signature..., code_typed)
         sparams = Sugar.get_static_parameters(m)
