@@ -1,6 +1,15 @@
 import Sugar
 using Sugar: LazyMethod, expr_type, resolve_func, similar_expr, replace_expr, getfunction, isintrinsic
 
+
+## intrinsic rewriting
+
+const intrinsic_map = Dict{Function,Function}(
+    Base.sin    => CUDAnative.sin,
+    Base.cos    => CUDAnative.cos
+)
+
+# rewrite intrinsics in the source of a LazyMethod
 function rewrite_intrinsics(m::LazyMethod, expr)
     changed = false
     body = first(replace_expr(expr) do expr
@@ -28,17 +37,10 @@ function rewrite_intrinsics(m::LazyMethod, expr)
     body, changed
 end
 
-"""
-Replaces recursively Julia Base functions which are defined as intrinsics in CUDAnative
-Returns the resulting function and a bool indicating, wether the function was changed.
-"""
 function rewrite_intrinsics(f::Function, types)
     # rewrite the function itself
-    # TODO: cover all intrinsics
-    if f in (cos, sin, tan, max)
-        cu_f = getfield(CUDAnative, Symbol(f))
-        # TODO: check if there's a method for the argument types
-        return cu_f, true
+    if haskey(intrinsic_map, f)
+        return intrinsic_map[f], true
     end
 
     # get the source and rewrite static parameters
