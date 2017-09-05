@@ -23,11 +23,11 @@ function rewrite_intrinsics(m::LazyMethod, expr)
                 # function arguments have to be rewritten as well!
                 args_changed = false
                 fargs = map(args[2:end]) do x
-                    rewr, changed = rewrite_intrinsics(m, x)
-                    args_changed = changed || args_changed
+                    rewr, _changed = rewrite_intrinsics(m, x)
+                    args_changed = _changed | args_changed
                     rewr
                 end
-                changed |= call_changed || args_changed
+                changed = call_changed | args_changed | changed
                 return true, similar_expr(expr, [func, fargs...])
             end
         elseif isa(expr, Symbol)
@@ -43,6 +43,9 @@ function rewrite_intrinsics(f, types)
     if haskey(intrinsic_map, f)
         return intrinsic_map[f], true
     end
+    # if f in (cos, sin, max, tan)
+    #     return (args...)->(println(f, args); f(args...)), true
+    # end
     # get the source and rewrite static parameters
     m = LazyMethod(f, types)
     # if is a Julia intrinsic, stop
@@ -65,7 +68,6 @@ function rewrite_intrinsics(f, types)
         warn(e)
         return f, false
     end
-
     # rewrite the source
     body, changed = rewrite_intrinsics(m, expr)
     if changed
@@ -80,9 +82,11 @@ end
 #     x::Float32
 #     Test() = new(sin(1f0))
 # end
-#
+# lal(t) = t
 # function test_intrins_recursive(a)
-#     tan(Test().x)
+#     t = tan(Test().x)
+#     x = ccall(:clock, Int32, ())
+#     lal(t) + Float32(x)
 # end
 # function test_intrinsic_rewrite()
 #     a, b = 1f0, 2f0
