@@ -26,14 +26,6 @@ for (name, mode, mask) in ((:shfl_up,   :up,   UInt32(0x00)),
     end
 end
 
-## synonyms
-# TODO: these reinterpret and reuse the i32 shuffle, should we use the f32 shuffle?
-for typ in (Int32, Float32),
-    name in [:shfl_up, :shfl_down, :shfl_xor, :shfl]
-    @eval @inline $name(val::$typ, srclane, width::Integer=$ws) =
-        reinterpret($typ, $name(reinterpret(UInt32, val), srclane, width))
-end
-
 
 # multi-word primitives (recurse into words)
 
