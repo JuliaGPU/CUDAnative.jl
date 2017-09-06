@@ -4,8 +4,7 @@ using Sugar: LazyMethod, expr_type, resolve_func, similar_expr, replace_expr, ge
 # intrinsic rewriting
 
 const intrinsic_map = Dict{Function, Function}(
-    Base.sin    => CUDAnative.sin,
-    Base.cos    => CUDAnative.cos
+    Base.log10  => CUDAnative.log10
 )
 
 # rewrite intrinsics in the source of a LazyMethod
@@ -44,7 +43,7 @@ function rewrite_intrinsics(f, types)
         return intrinsic_map[f], true
     end
 
-    # get the source and rewrite static parameters
+    # get the source and rewrite to make it round-trippable
     m = LazyMethod(f, types)
     isintrinsic(m) && return f, false           # if is a Julia intrinsic, stop
     expr = try
