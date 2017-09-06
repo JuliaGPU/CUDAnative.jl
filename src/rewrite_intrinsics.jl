@@ -43,14 +43,10 @@ function rewrite_intrinsics(f, types)
     if haskey(intrinsic_map, f)
         return intrinsic_map[f], true
     end
-    # if f in (cos, sin, max, tan)
-    #     return (args...)->(println(f, args); f(args...)), true
-    # end
+
     # get the source and rewrite static parameters
     m = LazyMethod(f, types)
-    # if is a Julia intrinsic, stop
-    isintrinsic(m) && return f, false
-    # otherwise go through the source and rewrite function calls recursevely the source!
+    isintrinsic(m) && return f, false           # if is a Julia intrinsic, stop
     expr = try
         expr = Sugar.sugared(m.signature..., code_typed)
         sparams = Sugar.get_static_parameters(m)
@@ -68,6 +64,7 @@ function rewrite_intrinsics(f, types)
         warn(e)
         return f, false
     end
+
     # rewrite the source
     body, changed = rewrite_intrinsics(m, expr)
     if changed

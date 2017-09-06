@@ -371,7 +371,7 @@ function cufunction(dev::CuDevice, func::ANY, tt::ANY)
     CUDAnative.configured || error("CUDAnative.jl has not been configured; cannot JIT code.")
     @assert isa(func, Core.Function)
 
-    func = rewrite_intrinsics(func, (tt.parameters...,))
+    func , _= rewrite_intrinsics(func, (tt.parameters...,))
 
     # select a capability level
     dev_cap = capability(dev)
