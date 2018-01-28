@@ -152,6 +152,16 @@ function irgen(@nospecialize(func), @nospecialize(tt))
     return mod, entry
 end
 
+function addNVVMMetadata!(mod::LLVM.Module, func::LLVM.Function, name, operand)
+    #TODO: get mod from func
+    MD = metadata(mod)
+    values = Value[func, MDString(name), ConstantInt(Int32(operand))]
+    if haskey(MD, "nvvm.annotations")
+        append!(MD["nvvm.annotations"], values)
+    end
+    push!(MD, "nvvm.annotations", MDNode(values))
+end
+
 # generate a kernel wrapper to fix & improve argument passing
 function wrap_entry!(mod::LLVM.Module, entry_f::LLVM.Function, @nospecialize(tt))
     entry_ft = eltype(llvmtype(entry_f))
@@ -244,6 +254,10 @@ function wrap_entry!(mod::LLVM.Module, entry_f::LLVM.Function, @nospecialize(tt)
         always_inliner!(pm)
         run!(pm, mod)
     end
+
+    # add nvvm.annotations
+    addNVVMMetadata!(mod, wrapper_f, "maxntidx", 256)
+    # addNVVMMetadata!(wrapper_f, "minntidx", 256)
 
     return wrapper_f
 end
