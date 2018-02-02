@@ -24,12 +24,12 @@ CuDeviceArray
 # NOTE: we can't support the typical `tuple or series of integer` style construction,
 #       because we're currently requiring a trailing pointer argument.
 
-struct CuDeviceArray{T,N,A} <: AbstractArray{T,N}
+struct CuDeviceArray{T,N,A,C} <: AbstractArray{T,N}
     shape::NTuple{N,Int}
-    ptr::DevicePtr{T,A}
+    ptr::DevicePtr{T,A,C}
 
     # inner constructors, fully parameterized, exact types (ie. Int not <:Integer)
-    CuDeviceArray{T,N,A}(shape::NTuple{N,Int}, ptr::DevicePtr{T,A}) where {T,A,N} = new(shape,ptr)
+    CuDeviceArray{T,N,A,C}(shape::NTuple{N,Int}, ptr::DevicePtr{T,A,C}) where {T,A,N,C} = new(shape,ptr)
 end
 
 const CuDeviceVector = CuDeviceArray{T,1,A} where {T,A}

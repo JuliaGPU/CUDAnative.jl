@@ -27,19 +27,22 @@ end
 # Device pointer
 #
 
-struct DevicePtr{T,A}
+struct DevicePtr{T,A,C}
     ptr::Ptr{T}
 
     # inner constructors, fully parameterized
-    DevicePtr{T,A}(ptr::Ptr{T}) where {T,A<:AddressSpace} = new(ptr)
+    DevicePtr{T,A,C}(ptr::Ptr{T}) where {T,A<:AddressSpace,C} = new(ptr)
 end
 
+const ConstDevicePtr{T, A} = DevicePtr{T, A, true}
+
 # outer constructors, partially parameterized
-DevicePtr{T}(ptr::Ptr{T}) where {T} = DevicePtr{T,AS.Generic}(ptr)
+DevicePtr{T}(ptr::Ptr{T})           where {T} = DevicePtr{T,AS.Generic,false}(ptr)
+ConstDevicePtr{T}(ptr::Ptr{T})      where {T} = DevicePtr{T,AS.Generic,true}(ptr)
 
 # outer constructors, non-parameterized
-DevicePtr(ptr::Ptr{T})              where {T} = DevicePtr{T,AS.Generic}(ptr)
-
+DevicePtr(ptr::Ptr{T})              where {T} = DevicePtr{T,AS.Generic,false}(ptr)
+ConstDevicePtr(ptr::Ptr{T})         where {T} = DevicePtr{T,AS.Generic,true}(ptr)
 
 ## getters
 
@@ -101,18 +104,29 @@ Base.convert(::Type{Int}, ::Type{AS.Local})    = 5
 if Base.VERSION >= v"0.6.1"
     # requires backport of JuliaLang/julia#22022
 
-    @generated function Base.unsafe_load(p::DevicePtr{T,A}, i::I=1,
-                                         ::Type{Val{align}}=Val{1}) where {T,A,align,I<:Integer}
+    @generated function Base.unsafe_load(p::DevicePtr{T,A,Const}, i::I=1,
+                                         ::Type{Val{align}}=Val{1}) where {T,A,Const,align,I<:Integer}
         eltyp = convert(LLVMType, T)
 
         T_int = convert(LLVMType, Int)
         T_ptr = convert(LLVMType, Ptr{T})
 
         T_actual_ptr = LLVM.PointerType(eltyp)
+        T_ptr_as = LLVM.PointerType(eltyp, convert(Int, A))
 
         # create a function
         param_types = [T_ptr, T_int]
         llvm_f, _ = create_function(eltyp, param_types)
+
+        if T <: Integer
+            intrinsic = "llvm.nvvm.ldg.global.i"
+        elseif T <: AbstractFloat
+            intrinsic = "llvm.nvvm.ldg.global.f"
+        elseif T <: Ptr
+            intrinsic = "llvm.nvvm.ldg.global.p"
+        end
+        param_intrinsics = [T_ptr_as, T_int]
+        ldg_f, _ = create_function(eltype, param_intrinsics, intrinsic)
 
         # generate IR
         Builder(jlctx[]) do builder
@@ -126,16 +140,22 @@ if Base.VERSION >= v"0.6.1"
             end
 
             ptr = gep!(builder, ptr, [parameters(llvm_f)[2]])
-            ptr_with_as = addrspacecast!(builder, ptr, LLVM.PointerType(eltyp, convert(Int, A)))
-            val = load!(builder, ptr_with_as)
-            alignment!(val, align)
+            ptr_with_as = addrspacecast!(builder, ptr, T_ptr_as)
+
+            if !Const
+                val = load!(builder, ptr_with_as)
+                alignment!(val, align)
+            else
+                val = call!(builder, ldg_f, [ptr_with_as, ConstantInt(T_int, align)])
+            end
+
             ret!(builder, val)
         end
 
         call_function(llvm_f, T, Tuple{Ptr{T}, Int}, :((pointer(p), Int(i-one(I)))))
     end
 
-    @generated function Base.unsafe_store!(p::DevicePtr{T,A}, x, i::I=1,
+    @generated function Base.unsafe_store!(p::DevicePtr{T,A,false}, x, i::I=1,
                                            ::Type{Val{align}}=Val{1}) where {T,A,align,I<:Integer}
         eltyp = convert(LLVMType, T)
 
@@ -174,7 +194,7 @@ else
                              ::Type{Val{align}}=Val{1}) where {T,A,align} =
                 Base.pointerref(pointer(p), Int(i), align)
 
-    @inline Base.unsafe_store!(p::DevicePtr{T,A}, x, i::Integer=1,
+    @inline Base.unsafe_store!(p::DevicePtr{T,A,false}, x, i::Integer=1,
                                ::Type{Val{align}}=Val{1}) where {T,A,align} =
                 Base.pointerset(pointer(p), convert(T, x)::T, Int(i), align)
 end
