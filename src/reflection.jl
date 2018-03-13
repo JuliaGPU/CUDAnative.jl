@@ -121,6 +121,10 @@ export @device_code_lowered, @device_code_typed, @device_code_warntype,
 function emit_hooked_compilation(inner_hook, ex...)
     user_code = ex[end]
     kwargs = ex[1:end-1]
+    kwdict = Expr(:call, :Dict)
+    for ex in kwargs
+        push!(kwdict.args, :($(QuoteNode(ex.args[1])) => $(esc(ex.args[2]))))
+    end
     quote
         # wipe the compile cache to force recompilation
         empty!(CUDAnative.compilecache)
@@ -128,7 +132,7 @@ function emit_hooked_compilation(inner_hook, ex...)
         local kernels = 0
         function outer_hook(args...)
             kernels += 1
-            $inner_hook(args...; $(map(esc, kwargs)...))
+            $inner_hook(args...; $kwdict...)
         end
 
         @assert CUDAnative.compile_hook[] == nothing
