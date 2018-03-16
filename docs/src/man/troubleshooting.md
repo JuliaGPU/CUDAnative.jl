@@ -83,14 +83,14 @@ define i64 @julia_foo_62405(%CuDeviceArray.2* nocapture readonly, i64) {
 ```
 
 
-## Debug @info and line-number information
+## Debug info and line-number information
 
 LLVM's NVPTX back-end does not support the undocumented PTX debug format, so we cannot
 generate the necessary DWARF sections. This means that debugging generated code with e.g.
 `cuda-gdb` will be an unpleasant experience. Nonetheless, the PTX JIT is configured to emit
-debug @info (which corresponds with `nvcc -g`) when the Julia debug @info level is 2 or
+debug info (which corresponds with `nvcc -g`) when the Julia debug info level is 2 or
 higher (`julia -g2`).
 
 We do however support emitting line number information, which is useful for other CUDA tools
 like `cuda-memcheck`. The functionality (which corresponds with `nvcc -lineinfo`) is enabled
-when the Julia debug @info level is 1 (the default value) or higher.
+when the Julia debug info level is 1 (the default value) or higher.
