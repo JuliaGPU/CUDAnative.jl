@@ -10,6 +10,7 @@ using LLVM.Interop
 
 using Compat
 VERSION >= v"0.7.0-DEV.3382" && using Libdl
+VERSION < v"0.7-" && using MicroLogging
 
 const ext = joinpath(@__DIR__, "..", "deps", "ext.jl")
 isfile(ext) || error("CUDAnative.jl has not been built, please run Pkg.build(\"CUDAnative\").")
