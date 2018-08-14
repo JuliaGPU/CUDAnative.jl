@@ -20,6 +20,7 @@ cudaconvert(x::Tuple) = cudaconvert.(x)
 @generated function cudaconvert(x::NamedTuple)
     Expr(:tuple, (:($f=cudaconvert(x.$f)) for f in fieldnames(x))...)
 end
+cudaconvert(x::Base.RefValue) = cudaconvert(x[])
 
 # fast lookup of global world age
 world_age() = ccall(:jl_get_tls_world_age, UInt, ())
