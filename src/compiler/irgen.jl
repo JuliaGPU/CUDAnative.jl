@@ -64,15 +64,20 @@ Base.showerror(io::IO, err::MethodSubstitutionWarning) =
 function irgen(ctx::CompilerContext)
     # get the method instance
     isa(ctx.f, Core.Builtin) && throw(KernelError(ctx, "function is not a generic function"))
-    world = typemax(UInt)
+    cparams = Core.Compiler.CustomParams(typemax(UInt); aggressive_constant_propagation=true, ignore_all_inlining_heuristics=true)
+    ci = Base.code_typed(f, argtypes, argvals; params=params)[1].first
+
     meth = which(ctx.f, ctx.tt)
     sig = Base.signature_type(ctx.f, ctx.tt)::Type
     (ti, env) = ccall(:jl_type_intersection_with_env, Any,
                       (Any, Any), sig, meth.sig)::Core.SimpleVector
-    meth = Base.func_for_method_checked(meth, ti)
-    linfo = ccall(:jl_specializations_get_linfo, Ref{Core.MethodInstance},
-                  (Any, Any, Any, UInt), meth, ti, env, world)
 
+    meth = Base.func_for_method_checked(meth, ti)
+
+    linfo = ccall(:jl_specializations_get_linfo, Ref{Core.MethodInstance},
+                  (Any, Any, Any, UInt), meth, ti, env, cparams.world)
+
+    linfo.inferred = ci
     # set-up the compiler interface
     function hook_module_setup(ref::Ptr{Cvoid})
         ref = convert(LLVM.API.LLVMModuleRef, ref)
@@ -132,7 +137,7 @@ function irgen(ctx::CompilerContext)
     mod = let
         ref = ccall(:jl_get_llvmf_defn, LLVM.API.LLVMValueRef,
                     (Any, UInt, Bool, Bool, Base.CodegenParams),
-                    linfo, world, #=wrapper=#false, #=optimize=#false, params)
+                    linfo, cparams.world, #=wrapper=#false, #=optimize=#false, params)
         if ref == C_NULL
             throw(InternalCompilerError(ctx, "the Julia compiler could not generate LLVM IR"))
         end
