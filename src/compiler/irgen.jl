@@ -65,7 +65,7 @@ function irgen(ctx::CompilerContext)
     # get the method instance
     isa(ctx.f, Core.Builtin) && throw(KernelError(ctx, "function is not a generic function"))
     cparams = Core.Compiler.CustomParams(typemax(UInt); #=aggressive_constant_propagation=true, ignore_all_inlining_heuristics=true=#)
-    ci = Base.code_typed(f, argtypes, argvals; params=cparams)[1].first
+    ci = Base.code_typed(ctx.f, ctx.tt; params=cparams)[1].first
 
     meth = which(ctx.f, ctx.tt)
     sig = Base.signature_type(ctx.f, ctx.tt)::Type
