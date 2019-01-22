@@ -132,7 +132,61 @@ function irgen(ctx::CompilerContext)
     linfo = ccall(:jl_specializations_get_linfo, Ref{Core.MethodInstance},
                   (Any, Any, Any, UInt), meth, ti, env, world)
 
+    # primary source of code: compile the requested method
     entry, modules = compile_linfo(ctx, linfo, world)
+
+    # secondary source: calls to `jl_invoke`
+    let
+        invoked_functions = Dict{Core.MethodInstance, LLVM.Function}()
+        i = 1
+        while i <= length(modules)
+            mod = modules[i]
+            i += 1
+            if haskey(functions(mod), "jl_invoke")
+                jl_invoke = functions(mod)["jl_invoke"]
+                # emit_jlcall casts and calls the function
+                casts = user.(uses(jl_invoke))::Vector{ConstantExpr}
+                calls = user.(Iterators.flatten(uses.(casts)))::Vector{LLVM.CallInst}
+                for call in calls
+                    # decode the call
+                    ops = collect(operands(call))
+                    addrspacecast = ops[1]::ConstantExpr
+                    ptrtoint = operands(addrspacecast)[1]
+                    int = convert(Int, operands(ptrtoint)[1])
+                    ptr = convert(Ptr{Core.MethodInstance}, int)
+                    invoked_linfo = unsafe_load(ptr)
+
+                    # compile the invoked function
+                    invoked_f = get!(invoked_functions, invoked_linfo) do
+                        f, mods = compile_linfo(ctx, invoked_linfo, world)
+                        append!(modules, mods)
+                        f
+                    end
+
+                    # create a prototype in the current module
+                    decl_f = LLVM.Function(mod, LLVM.name(invoked_f), eltype(llvmtype(invoked_f)))
+
+                    # replace the call
+                    # WIP: invoked f has an arg per argument, while jl_invoke takes a buffer
+                    #      the arg buffer also contains the function object, etc.
+                end
+                # for use in uses(jl_invoke)
+                #     cast = user(use)
+
+                #     if isa(call, LLVM.ConstantExpr)
+                #         @
+                #     end
+                #     @warn call
+                #     @warn value(use)
+
+                #     # decode the call
+                #     ops = collect(operands(call))
+                #     linfo_ptr = ops[1]
+                #     # @warn linfo_ptr
+                # end
+            end
+        end
+    end
 
     # link in dependent modules
     mod = popfirst!(modules)
