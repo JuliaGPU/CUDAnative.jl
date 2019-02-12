@@ -468,7 +468,7 @@ end
 
 @testset "safe_fn" begin
     name = "julia_^
-    @test safe_fn(name) != name 
+    @test CUDAnative.safe_fn(name) != name 
 end
 
 
