@@ -466,18 +466,18 @@ end
     end
 end
 
-@testset "Correct mangling of ^" begin
+@testset "function name mangling" begin
     name = "julia_^"
     @test CUDAnative.safe_fn(name) != name
 
     @eval @noinline $(Symbol("dummy_^"))(x) = x
 
-    @eval kernel_341(a,i) = (@inbounds a[1]=$(Symbol("dummy_^"))(a[1]); nothing)
+    @eval kernel_341(ptr) = (@inbounds unsafe_store!(ptr, $(Symbol("dummy_^"))(unsafe_load(ptr))); nothing)
 
-    @test CUDAnative.code_sass(kernel_341, Tuple{CuDeviceArray{Int,2,AS.Global},Int})
+    CUDAnative.code_sass(devnull, kernel_341, Tuple{Ptr{Int}})
 end
 
-@testset
+end
 
 
 ############################################################################################
