@@ -466,10 +466,18 @@ end
     end
 end
 
-@testset "safe_fn" begin
-    name = "julia_^
-    @test CUDAnative.safe_fn(name) != name 
+@testset "Correct mangling of ^" begin
+    name = "julia_^"
+    @test CUDAnative.safe_fn(name) != name
+
+    @eval @noinline $(Symbol("dummy_^"))(x) = x
+
+    @eval kernel_341(a,i) = (@inbounds a[1]=$(Symbol("dummy_^"))(a[1]); nothing)
+
+    @test CUDAnative.code_sass(kernel_341, Tuple{CuDeviceArray{Int,2,AS.Global},Int})
 end
+
+@testset
 
 
 ############################################################################################
