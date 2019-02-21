@@ -357,6 +357,112 @@ function lower_gc_frame!(fun::LLVM.Function)
     return changed
 end
 
+# Visits all calls to a particular intrinsic in a given LLVM module.
+function visit_intrinsic(visit_call::Function, name::AbstractString, mod::LLVM.Module)
+    if haskey(functions(mod), name)
+        func = functions(mod)[name]
+
+        for use in uses(func)
+            call = user(use)::LLVM.CallInst
+            visit_call(call)
+        end
+    end
+end
+
+# Lowers the GC intrinsics produce by the LateLowerGCFrame pass. These
+# intrinsics are the last point at which we can intervene in the pipeline
+# before the passes that deal with them become CPU-specific.
+function lower_final_gc_intrinsics!(mod::LLVM.Module)
+    ctx = global_ctx::CompilerContext
+    changed = false
+
+    # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
+    # store for an object, including headroom, but does not set the object's
+    # tag.
+    visit_intrinsic("julia.gc_alloc_bytes", mod) do call
+        # Decode the call.
+        ops = collect(operands(call))
+        sz = ops[2]
+
+        # We need to reserve a single pointer of headroom for the tag.
+        # (LateLowerGCFrame depends on us doing that.)
+        headroom = Runtime.tag_size
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = call!(builder, Runtime.get(:gc_pool_alloc), [ConstantInt(Int32(headroom) + sz, JuliaContext())])
+            bumped_ptr = gep!(builder, ptr, [ConstantInt(1, JuliaContext())])
+            replace_uses!(call, bumped_ptr)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # Next up: 'julia.new_gc_frame'. This intrinsic allocates a new GC frame.
+    # We'll lower it as an alloca and hope SSA construction and DCE passes
+    # get rid of the alloca. This is a reasonable thing to hope for because
+    # all intrinsics that may cause the GC frame to escape will be replaced by
+    # nops.
+    visit_intrinsic("julia.new_gc_frame", mod) do call
+        new_gc_frame = functions(mod)["julia.new_gc_frame"]
+
+        # Decode the call.
+        ops = collect(operands(call))
+        sz = ops[1]
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = array_alloca!(builder, eltype(return_type(new_gc_frame)), [sz])
+            replace_uses!(call, ptr)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.get_gc_frame_slot' is closely related to the previous
+    # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
+    # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
+    visit_intrinsic("julia.get_gc_frame_slot", mod) do call
+        # Decode the call.
+        ops = collect(operands(call))
+        frame = ops[1]
+        offset = ops[2]
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = gep!(builder, frame, [offset])
+            replace_uses!(call, ptr)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.push_gc_frame' registers a GC frame with the GC. We
+    # don't have a GC, so we can just delete calls to this intrinsic!
+    visit_intrinsic("julia.push_gc_frame", mod) do call
+        unsafe_delete!(LLVM.parent(call), call)
+        changed = true
+    end
+
+    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC, so
+    # we can just delete calls to this intrinsic, too.
+    visit_intrinsic("julia.pop_gc_frame", mod) do call
+        unsafe_delete!(LLVM.parent(call), call)
+        changed = true
+    end
+
+    return changed
+end
+
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.
 #
 # this assumes and checks that the TLS is unused, which should be the case for most GPU code
