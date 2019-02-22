@@ -364,7 +364,7 @@ function visit_calls_to(visit_call::Function, name::AbstractString, mod::LLVM.Mo
 
         for use in uses(func)
             call = user(use)::LLVM.CallInst
-            visit_call(call)
+            visit_call(call, func)
         end
     end
 end
@@ -373,7 +373,7 @@ end
 # Returns a Boolean that tells if any calls were actually deleted.
 function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
     changed = false
-    visit_calls_to(name, mod) do call
+    visit_calls_to(name, mod) do call, _
         unsafe_delete!(LLVM.parent(call), call)
         changed = true
     end
@@ -390,10 +390,14 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
     # store for an object, including headroom, but does not set the object's
     # tag.
-    visit_calls_to("julia.gc_alloc_bytes", mod) do call
+    visit_calls_to("julia.gc_alloc_bytes", mod) do call, gc_alloc_bytes
+        gc_alloc_bytes_ft = eltype(llvmtype(gc_alloc_bytes))::LLVM.FunctionType
+        T_ret = return_type(gc_alloc_bytes_ft)::LLVM.PointerType
+        T_bitcast = LLVM.PointerType(T_ret, LLVM.addrspace(T_ret))
+
         # Decode the call.
         ops = collect(operands(call))
-        sz = ops[2]
+        size = ops[2]
 
         # We need to reserve a single pointer of headroom for the tag.
         # (LateLowerGCFrame depends on us doing that.)
@@ -403,9 +407,12 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
         # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
-            ptr = call!(builder, Runtime.get(:gc_pool_alloc), [ConstantInt(Int32(headroom) + sz, JuliaContext())])
-            bumped_ptr = gep!(builder, ptr, [ConstantInt(1, JuliaContext())])
+            total_size = add!(builder, size, ConstantInt(Int32(headroom), JuliaContext()))
+            ptr = call!(builder, Runtime.get(:gc_pool_alloc), [total_size])
+            cast_ptr = bitcast!(builder, ptr, T_bitcast)
+            bumped_ptr = gep!(builder, cast_ptr, [ConstantInt(Int32(1), JuliaContext())])
             replace_uses!(call, bumped_ptr)
+            unsafe_delete!(LLVM.parent(call), call)
             dispose(builder)
         end
 
@@ -417,19 +424,22 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # get rid of the alloca. This is a reasonable thing to hope for because
     # all intrinsics that may cause the GC frame to escape will be replaced by
     # nops.
-    visit_calls_to("julia.new_gc_frame", mod) do call
-        new_gc_frame = functions(mod)["julia.new_gc_frame"]
+    visit_calls_to("julia.new_gc_frame", mod) do call, new_gc_frame
+        new_gc_frame_ft = eltype(llvmtype(new_gc_frame))::LLVM.FunctionType
+        T_ret = return_type(new_gc_frame_ft)::LLVM.PointerType
+        T_alloca = eltype(T_ret)
 
         # Decode the call.
         ops = collect(operands(call))
-        sz = ops[1]
+        size = ops[1]
 
         # Call the allocation function and bump the resulting pointer
         # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
-            ptr = array_alloca!(builder, eltype(return_type(new_gc_frame)), [sz])
+            ptr = array_alloca!(builder, T_alloca, size)
             replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
             dispose(builder)
         end
 
@@ -439,7 +449,7 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # The 'julia.get_gc_frame_slot' is closely related to the previous
     # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
     # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
-    visit_calls_to("julia.get_gc_frame_slot", mod) do call
+    visit_calls_to("julia.get_gc_frame_slot", mod) do call, _
         # Decode the call.
         ops = collect(operands(call))
         frame = ops[1]
@@ -451,6 +461,7 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
             position!(builder, call)
             ptr = gep!(builder, frame, [offset])
             replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
             dispose(builder)
         end
 
