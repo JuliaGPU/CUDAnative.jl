@@ -358,7 +358,7 @@ function lower_gc_frame!(fun::LLVM.Function)
 end
 
 # Visits all calls to a particular intrinsic in a given LLVM module.
-function visit_intrinsic(visit_call::Function, name::AbstractString, mod::LLVM.Module)
+function visit_calls_to(visit_call::Function, name::AbstractString, mod::LLVM.Module)
     if haskey(functions(mod), name)
         func = functions(mod)[name]
 
@@ -367,6 +367,17 @@ function visit_intrinsic(visit_call::Function, name::AbstractString, mod::LLVM.M
             visit_call(call)
         end
     end
+end
+
+# Deletes all calls to a particular intrinsic in a given LLVM module.
+# Returns a Boolean that tells if any calls were actually deleted.
+function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
+    changed = false
+    visit_calls_to(name, mod) do call
+        unsafe_delete!(LLVM.parent(call), call)
+        changed = true
+    end
+    return changed
 end
 
 # Lowers the GC intrinsics produce by the LateLowerGCFrame pass. These
@@ -379,7 +390,7 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
     # store for an object, including headroom, but does not set the object's
     # tag.
-    visit_intrinsic("julia.gc_alloc_bytes", mod) do call
+    visit_calls_to("julia.gc_alloc_bytes", mod) do call
         # Decode the call.
         ops = collect(operands(call))
         sz = ops[2]
@@ -406,7 +417,7 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # get rid of the alloca. This is a reasonable thing to hope for because
     # all intrinsics that may cause the GC frame to escape will be replaced by
     # nops.
-    visit_intrinsic("julia.new_gc_frame", mod) do call
+    visit_calls_to("julia.new_gc_frame", mod) do call
         new_gc_frame = functions(mod)["julia.new_gc_frame"]
 
         # Decode the call.
@@ -428,7 +439,7 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
     # The 'julia.get_gc_frame_slot' is closely related to the previous
     # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
     # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
-    visit_intrinsic("julia.get_gc_frame_slot", mod) do call
+    visit_calls_to("julia.get_gc_frame_slot", mod) do call
         # Decode the call.
         ops = collect(operands(call))
         frame = ops[1]
@@ -448,17 +459,14 @@ function lower_final_gc_intrinsics!(mod::LLVM.Module)
 
     # The 'julia.push_gc_frame' registers a GC frame with the GC. We
     # don't have a GC, so we can just delete calls to this intrinsic!
-    visit_intrinsic("julia.push_gc_frame", mod) do call
-        unsafe_delete!(LLVM.parent(call), call)
-        changed = true
-    end
+    changed |= delete_calls_to!("julia.push_gc_frame", mod)
 
     # The 'julia.pop_gc_frame' unregisters a GC frame with the GC, so
     # we can just delete calls to this intrinsic, too.
-    visit_intrinsic("julia.pop_gc_frame", mod) do call
-        unsafe_delete!(LLVM.parent(call), call)
-        changed = true
-    end
+    changed |= delete_calls_to!("julia.pop_gc_frame", mod)
+
+    # Ditto for 'julia.queue_gc_root'.
+    changed |= delete_calls_to!("julia.queue_gc_root", mod)
 
     return changed
 end
