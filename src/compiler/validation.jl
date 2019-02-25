@@ -98,7 +98,9 @@ function check_ir!(ctx, errors::Vector{IRError}, f::LLVM.Function)
     return errors
 end
 
-const special_fns = ("vprintf", "__assertfail", "malloc", "free", "__nvvm_reflect")
+const special_fns = ("vprintf", "__assertfail", "malloc", "free", "__nvvm_reflect",
+                     "cudaDeviceLaunch", "cudaDeviceLaunchV2", "cudaDeviceSynchronize",
+                     "cudaGetParameterBuffer", "cudaGetParameterBufferV2")
 
 const libjulia = Ref{Ptr{Cvoid}}(C_NULL)
 
