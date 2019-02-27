@@ -27,7 +27,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
 
         ModulePassManager() do pm
             initialize!(pm)
-            add!(pm, FunctionPass("LowerGCFrame", lower_gc_frame!))
+            add!(pm, FunctionPass("LowerGCFrame", eager_lower_gc_frame!))
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
             run!(pm, mod)
@@ -45,15 +45,13 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
             initialize!(pm)
             ccall(:jl_add_optimization_passes, Cvoid,
                   (LLVM.API.LLVMPassManagerRef, Cint, Cint),
-                  LLVM.ref(pm), Base.JLOptions().opt_level, #=lower_intrinsics=# 0)
+                  LLVM.ref(pm), Base.JLOptions().opt_level, #=lower_intrinsics=# 1)
             run!(pm, mod)
         end
 
         ModulePassManager() do pm
             initialize!(pm)
-
-            # lower intrinsics
-            add!(pm, FunctionPass("LowerGCFrame", lower_gc_frame!))
+            add!(pm, ModulePass("FinalLowerGCGPU", lower_final_gc_intrinsics!))
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
 
@@ -298,6 +296,30 @@ function fixup_metadata!(f::LLVM.Function)
     end
 end
 
+# Visits all calls to a particular intrinsic in a given LLVM module.
+function visit_calls_to(visit_call::Function, name::AbstractString, mod::LLVM.Module)
+    if haskey(functions(mod), name)
+        func = functions(mod)[name]
+
+        for use in uses(func)
+            call = user(use)::LLVM.CallInst
+            visit_call(call, func)
+        end
+    end
+end
+
+# Deletes all calls to a particular intrinsic in a given LLVM module.
+# Returns a Boolean that tells if any calls were actually deleted.
+function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
+    changed = false
+    visit_calls_to(name, mod) do call, _
+        unsafe_delete!(LLVM.parent(call), call)
+        changed = true
+    end
+    return changed
+end
+
+
 # lower object allocations to to PTX malloc
 #
 # this is a PoC implementation that is very simple: allocate, and never free. it also runs
@@ -306,7 +328,7 @@ end
 # is currently very architecture/CPU specific: hard-coded pool sizes, TLS references, etc.
 # such IR is hard to clean-up, so we probably will need to have the GC lowering pass emit
 # lower-level intrinsics which then can be lowered to architecture-specific code.
-function lower_gc_frame!(fun::LLVM.Function)
+function eager_lower_gc_frame!(fun::LLVM.Function)
     job = current_job::CompilerJob
     mod = LLVM.parent(fun)
     changed = false
@@ -357,34 +379,10 @@ function lower_gc_frame!(fun::LLVM.Function)
     return changed
 end
 
-# Visits all calls to a particular intrinsic in a given LLVM module.
-function visit_calls_to(visit_call::Function, name::AbstractString, mod::LLVM.Module)
-    if haskey(functions(mod), name)
-        func = functions(mod)[name]
-
-        for use in uses(func)
-            call = user(use)::LLVM.CallInst
-            visit_call(call, func)
-        end
-    end
-end
-
-# Deletes all calls to a particular intrinsic in a given LLVM module.
-# Returns a Boolean that tells if any calls were actually deleted.
-function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
-    changed = false
-    visit_calls_to(name, mod) do call, _
-        unsafe_delete!(LLVM.parent(call), call)
-        changed = true
-    end
-    return changed
-end
-
-# Lowers the GC intrinsics produce by the LateLowerGCFrame pass. These
+# Lowers the GC intrinsics produced by the LateLowerGCFrame pass. These
 # intrinsics are the last point at which we can intervene in the pipeline
 # before the passes that deal with them become CPU-specific.
 function lower_final_gc_intrinsics!(mod::LLVM.Module)
-    ctx = global_ctx::CompilerContext
     changed = false
 
     # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
