@@ -34,7 +34,8 @@ end
 #   2. A kernel is started on the device; said kernel
 #      waits for the buffer to become nonzero.
 #   3. The host makes the buffer nonzero.
-#   4. The kernel exists once the buffer is nonzero.
+#   4. The kernel sets the buffer to a magic value and exits
+#      once the buffer is nonzero.
 #
 
 function spin(a)
