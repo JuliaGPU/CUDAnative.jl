@@ -1,4 +1,5 @@
 using CUDAdrv, CUDAnative, CuArrays
+import CUDAdrv: @apicall
 
 using Test
 
@@ -8,10 +9,16 @@ using Test
 # the host to access the array, the latter can be used by the device.
 function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T) where {T, N}
     # Allocate memory that is accessible to both the host and the device.
-    device_buffer = Mem.alloc(prod(dims) * sizeof(T), true)
+    bytesize = prod(dims) * sizeof(T)
+    ptr_ref = Ref{Ptr{Cvoid}}()
+    @apicall(
+        :cuMemAllocHost,
+        (Ptr{Ptr{Cvoid}}, Csize_t),
+        ptr_ref, bytesize)
+    device_buffer = CUDAdrv.Mem.Buffer(ptr_ref[], bytesize, CuCurrentContext())
 
     # Wrap the memory in an array for the host.
-    host_array = Base.unsafe_wrap(Array{T, N}, Ptr{T}(device_buffer.ptr), dims; own = false)
+    host_array = Base.unsafe_wrap(Array{T, N}, Ptr{T}(ptr_ref[]), dims; own = false)
 
     # Initialize the array's contents.
     fill!(host_array, init)
