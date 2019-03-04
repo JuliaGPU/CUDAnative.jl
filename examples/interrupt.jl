@@ -19,5 +19,6 @@ end
 # Run the kernel.
 @cuda_interruptible handle_interrupt threads=thread_count kernel()
 
-# Check that the destination buffer is as expected.
+# Check that the counter's final value equals the number
+# of threads.
 @test counter == thread_count
