@@ -154,11 +154,15 @@ end
 const ready = UInt32(0)
 const processing = UInt32(1)
 
-# Requests an interrupt and waits until the interrupt
-# completes. If an interrupt is already running, then
-# nothing happens. Returns `true` if an interrupt was
-# successfully started by this function; otherwise,
-# `false`.
+"""
+    interrupt_or_wait()
+
+Requests an interrupt and waits until the interrupt completes.
+If an interrupt is already running, then this function waits
+for that interrupt to complete, but does not request an interrupt
+of its own. Returns `true` if an interrupt was successfully
+requested by this function; otherwise, `false`.
+"""
 function interrupt_or_wait()::Bool
     state_ptr = get_interrupt_pointer()
     prev_state = atomic_compare_exchange!(state_ptr, ready, processing)
@@ -166,16 +170,23 @@ function interrupt_or_wait()::Bool
     return prev_state == ready
 end
 
-# Waits for the current interrupt to finish, if an
-# interrupt is currently running.
+"""
+    wait_for_interrupt()
+
+Waits for the current interrupt to finish, if an interrupt is
+currently running.
+"""
 function wait_for_interrupt()
     state_ptr = get_interrupt_pointer()
     while volatile_load(state_ptr) == processing
     end
 end
 
-# Repeatedly requests an interrupt until one is requested
-# successfully.
+"""
+    interrupt()
+
+Repeatedly requests an interrupt until one is requested successfully.
+"""
 function interrupt()
     while !interrupt_or_wait()
     end
