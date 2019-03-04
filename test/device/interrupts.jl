@@ -19,7 +19,6 @@ dummy_handler(kernel) = return
 end
 
 @testset "count" begin
-
     # This test uses interrupts to increment a host counter and then
     # checks that the counter's value equals the number of interrupts.
     # This is a useful thing to check because it verifies that interrupts
@@ -46,6 +45,37 @@ end
 
     # Run the kernel.
     @cuda_interruptible handle_interrupt threads=thread_count increment_counter()
+
+    # Check that the counter's final value equals the number
+    # of threads.
+    @test counter == thread_count
+end
+
+@testset "count in stream" begin
+    # This test is a copy of the previous test, but it uses a non-default
+    # CUDA stream. This should Just Work: @cuda_interruptible should
+    # intercept the `stream=...` argument and pass it to the stream-querying
+    # logic. All of this should be entirely transparent to the user.
+    thread_count = 128
+
+    # Define a kernel that makes the host count.
+    function increment_counter()
+        interrupt()
+        return
+    end
+
+    # Configure the interrupt to increment a counter.
+    global counter = 0
+    function handle_interrupt()
+        global counter
+        counter += 1
+    end
+
+    # Define a CUDA stream.
+    exec_stream = CuStream()
+
+    # Run the kernel.
+    @cuda_interruptible handle_interrupt threads=thread_count stream=exec_stream increment_counter()
 
     # Check that the counter's final value equals the number
     # of threads.
