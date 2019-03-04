@@ -27,7 +27,7 @@ function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T) where {T, N}
 end
 
 # Queries a stream for its status.
-function query_stream(stream::CUDAdrv.CuStream_t = C_NULL)::Cint
+function query_stream(stream::CUDAdrv.CuStream = CuDefaultStream())::Cint
     return ccall(
         (:cuStreamQuery, CUDAdrv.libcuda),
         Cint,
@@ -178,7 +178,7 @@ end
 
 # Waits for the current kernel to terminate and handle
 # any interrupts that we encounter along the way.
-function handle_interrupts(handler::Function, state::Ptr{UInt32}, stream::CUDAdrv.CuStream_t = C_NULL)
+function handle_interrupts(handler::Function, state::Ptr{UInt32}, stream::CuStream = CuDefaultStream())
     while true
         # Sleep to save processing power.
         sleep(0.001)
@@ -240,6 +240,15 @@ macro cuda_interruptible(handler, ex...)
     compiler_kwargs, call_kwargs, env_kwargs = CUDAnative.split_kwargs(kwargs)
     vars, var_exprs = CUDAnative.assign_args!(code, args)
 
+    # Find the stream on which the kernel is to be scheduled.
+    stream = CuDefaultStream()
+    for kwarg in call_kwargs
+        key, val = kwarg.args
+        if key == :stream
+            stream = val
+        end
+    end
+
     # convert the arguments, call the compiler and launch the kernel
     # while keeping the original arguments alive
     push!(code.args,
@@ -271,27 +280,50 @@ macro cuda_interruptible(handler, ex...)
                 kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
                 # Handle interrupts.
-                handle_interrupts($(esc(handler)), pointer(host_array, 1))
+                handle_interrupts($(esc(handler)), pointer(host_array, 1), $(esc(stream)))
             end
          end)
     return code
 end
 
-# Define a kernel that invokes the host to do some work.
-function kernel()
+# Define a kernel that copies some data from one array to another.
+# The host is invoked to populate the source array.
+function kernel(a::CUDAnative.DevicePtr{Float32}, b::CUDAnative.DevicePtr{Float32})
+    i = (blockIdx().x-1) * blockDim().x + threadIdx().x
     interrupt()
+    threadfence_system()
+    Base.unsafe_store!(b, Base.unsafe_load(a, i), i)
     return
 end
 
 thread_count = 64
 
-# Run the kernel.
-global counter = 0
+# Allocate two arrays.
+source_array = Mem.alloc(Float32, thread_count)
+destination_array = Mem.alloc(Float32, thread_count)
+source_pointer = Base.unsafe_convert(CuPtr{Float32}, source_array)
+destination_pointer = Base.unsafe_convert(CuPtr{Float32}, destination_array)
+
+# Zero-fill the source and destination arrays.
+Mem.upload!(source_array, zeros(Float32, thread_count))
+Mem.upload!(destination_array, zeros(Float32, thread_count))
+
+# Define one stream for kernel execution and another for
+# data transfer.
+data_stream = CuStream()
+exec_stream = CuStream()
+
+# Define a magic value.
+magic = 42.f0
+
+# Configure the interrupt to fill the input array with the magic value.
 function handle_interrupt()
-    global counter
-    counter += 1
+    Mem.upload!(source_array, fill(magic, thread_count), data_stream; async = true)
+    synchronize(data_stream)
 end
 
-@cuda_interruptible handle_interrupt threads=thread_count kernel()
+# Run the kernel.
+@cuda_interruptible handle_interrupt threads=thread_count stream=exec_stream kernel(source_pointer, destination_pointer)
 
-@test counter == thread_count
+# Check that the destination buffer is as expected.
+@test Mem.download(Float32, destination_array, thread_count) == fill(magic, thread_count)
