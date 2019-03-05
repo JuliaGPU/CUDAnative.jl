@@ -39,6 +39,7 @@ include(joinpath("device", "threading.jl"))
 include("compiler.jl")
 include("execution.jl")
 include("interrupts.jl")
+include("gc.jl")
 include("reflection.jl")
 
 include("deprecated.jl")

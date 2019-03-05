@@ -187,7 +187,7 @@ end
 """
     @cuda_interruptible [kwargs...] func(args...)
 
-High-level interface for executing code on a GPU with support for interrups.
+High-level interface for executing code on a GPU with support for interrupts.
 The `@cuda_interruptible` macro should prefix a call, with `func` a callable function
 or object that should return nothing. It will be compiled to a CUDA function upon first
 use, and to a certain extent arguments will be converted and anaged automatically using
