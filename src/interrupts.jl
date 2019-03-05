@@ -54,45 +54,6 @@ end
 # Gets a pointer to a global with a particular name. If the global
 # does not exist yet, then it is declared in the global memory address
 # space.
-@generated function atomic_compare_exchange!(ptr::Ptr{T}, cmp::T, new::T)::T where T
-    ptr_type = convert(LLVMType, Ptr{T})
-    lt = string(convert(LLVMType, T))
-    ir = """
-        %ptr = inttoptr $ptr_type %0 to $lt*
-        %result = cmpxchg volatile $lt* %ptr, $lt %1, $lt %2 seq_cst seq_cst
-        %rv = extractvalue { $lt, i1 } %result, 0
-        ret $lt %rv
-        """
-    :(Core.Intrinsics.llvmcall($ir, $T, Tuple{$(Ptr{T}), $T, $T}, ptr, cmp, new))
-end
-
-# Loads a value from a pointer.
-@generated function volatile_load(ptr::Ptr{T})::T where T
-    ptr_type = string(convert(LLVMType, Ptr{T}))
-    lt = string(convert(LLVMType, T))
-    ir = """
-        %ptr = inttoptr $ptr_type %0 to $lt*
-        %rv = load volatile $lt, $lt* %ptr
-        ret $lt %rv
-        """
-    :(Core.Intrinsics.llvmcall($ir, $T, Tuple{$(Ptr{T})}, ptr))
-end
-
-# Stores a value at a particular address.
-@generated function volatile_store!(ptr::Ptr{T}, value::T) where T
-    ptr_type = string(convert(LLVMType, Ptr{T}))
-    lt = string(convert(LLVMType, T))
-    ir = """
-        %ptr = inttoptr $ptr_type %0 to $lt*
-        store volatile $lt %1, $lt* %ptr
-        ret void
-        """
-    :(Core.Intrinsics.llvmcall($ir, Cvoid, Tuple{$(Ptr{T}), $T}, ptr, value))
-end
-
-# Gets a pointer to a global with a particular name. If the global
-# does not exist yet, then it is declared in the global memory address
-# space.
 @generated function get_global_pointer(::Val{global_name}, ::Type{T})::Ptr{T} where {global_name, T}
     T_global = convert(LLVMType, T)
     T_result = convert(LLVMType, Ptr{T})
