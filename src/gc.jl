@@ -80,9 +80,9 @@ struct GCMasterRecord
     # of roots per thread.
     root_buffer_capacity::UInt32
 
-    # A pointer to a buffer that describes the number of elements
-    # currently in each root buffer.
-    root_buffer_sizes::Ptr{UInt32}
+    # A pointer to a list of root buffer pointers that point to the
+    # end of the root buffer for every thread.
+    root_buffer_fingers::Ptr{Ptr{ObjectRef}}
 
     # A pointer to a list of buffers that can be used to store GC roots in.
     # These root buffers are partitioned into GC frames later on.
@@ -118,23 +118,13 @@ end
     return threadIdx().x
 end
 
-# Gets a pointer to the first element in the root buffer for this thread.
-@inline function get_root_buffer_start()::Ptr{ObjectRef}
-    master_record = get_gc_master_record()
-    offset = master_record.root_buffer_capacity * get_thread_id()
-    return master_record.root_buffers + offset * sizeof(ObjectRef)
-end
+const GCFrame = Ptr{ObjectRef}
 
 # Same as 'new_gc_frame_impl', but does not disable collections.
-function new_gc_frame_impl(size::UInt32)::Ptr{ObjectRef}
+function new_gc_frame_impl(size::UInt32)::GCFrame
     master_record = get_gc_master_record()
-
-    # Get the current size of the root buffer.
-    current_size = unsafe_load(
-        master_record.root_buffer_sizes,
-        get_thread_id())
-
-    return get_root_buffer_start() + current_size * sizeof(ObjectRef)
+    # Return the root buffer tip: that's where the new GC frame starts.
+    return unsafe_load(master_record.root_buffer_fingers, get_thread_id())
 end
 
 """
@@ -142,50 +132,40 @@ end
 
 Allocates a new GC frame.
 """
-function new_gc_frame(size::UInt32)::Ptr{ObjectRef}
+function new_gc_frame(size::UInt32)::GCFrame
     @nocollect new_gc_frame_impl(size)
 end
 
 """
-    push_gc_frame(size::UInt32)
+    push_gc_frame(gc_frame::GCFrame, size::UInt32)
 
 Registers a GC frame with the garbage collector.
 """
-function push_gc_frame(size::UInt32)
+function push_gc_frame(gc_frame::GCFrame, size::UInt32)
     @nocollect begin
         master_record = get_gc_master_record()
 
-        # Get the current size of the root buffer.
-        current_size = unsafe_load(
-            master_record.root_buffer_sizes,
-            get_thread_id())
-
-        # Add the new size to the current root buffer size.
+        # Update the root buffer tip.
         unsafe_store!(
-            master_record.root_buffer_sizes,
-            current_size + size,
+            master_record.root_buffer_fingers,
+            gc_frame + size * sizeof(ObjectRef),
             get_thread_id())
     end
 end
 
 """
-    pop_gc_frame(size::UInt32)
+    pop_gc_frame(gc_frame::GCFrame)
 
 Deregisters a GC frame.
 """
-function pop_gc_frame(size::UInt32)
+function pop_gc_frame(gc_frame::GCFrame)
     @nocollect begin
         master_record = get_gc_master_record()
 
-        # Get the current size of the root buffer.
-        current_size = unsafe_load(
-            master_record.root_buffer_sizes,
-            get_thread_id())
-
-        # Subtract the size from the current root buffer size.
+        # Update the root buffer tip.
         unsafe_store!(
-            master_record.root_buffer_sizes,
-            current_size - size,
+            master_record.root_buffer_fingers,
+            gc_frame,
             get_thread_id())
     end
 end
@@ -387,10 +367,15 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_cap
     gc_memory_end_ptr = pointer(buffer, length(buffer))
 
     # Set up root buffers.
-    sizebuf_bytesize = sizeof(Int32) * thread_count
-    sizebuf_ptr = gc_memory_start_ptr
-    rootbuf_bytesize = sizeof(ObjectRef) * default_root_buffer_capacity * thread_count
-    rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, sizebuf_ptr + sizebuf_bytesize)
+    fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
+    fingerbuf_ptr = Base.unsafe_convert(Ptr{Ptr{ObjectRef}}, gc_memory_start_ptr)
+    rootbuf_bytesize = sizeof(ObjectRef) * root_buffer_capacity * thread_count
+    rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, fingerbuf_ptr + fingerbuf_bytesize)
+
+    # Populate the root buffer fingers.
+    for i in 1:thread_count
+        unsafe_store!(fingerbuf_ptr, rootbuf_ptr + i * sizeof(ObjectRef) * root_buffer_capacity, i)
+    end
 
     # Compute a pointer to the start of the heap.
     heap_start_ptr = rootbuf_ptr + rootbuf_bytesize
@@ -408,7 +393,7 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_cap
         global_arena,
         GCArenaRecord(0, first_entry_ptr, C_NULL))
 
-    return GCMasterRecord(global_arena, root_buffer_capacity, sizebuf_ptr, rootbuf_ptr)
+    return GCMasterRecord(global_arena, root_buffer_capacity, fingerbuf_ptr, rootbuf_ptr)
 end
 
 # Collects garbage. This function is designed to be called by
