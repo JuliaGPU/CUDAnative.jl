@@ -91,9 +91,94 @@ end
     return ReaderWriterLock(@cuda_global_ptr("gc_interrupt_lock", ReaderWriterLockState))
 end
 
-# Gets a pointer to the GC master record.
-@inline function get_gc_master_record()::Ptr{GCMasterRecord}
-    return @cuda_global_ptr("gc_master_record", GCMasterRecord)
+# Runs a function in such a way that no collection phases will
+# run as long as the function is executing. Use with care: this
+# function acquires the GC interrupt lock in reader mode, so careless
+# use may cause deadlocks.
+@inline function nocollect(func::Function)
+    return reader_locked(func, get_interrupt_lock())
+end
+
+# Gets the GC master record.
+@inline function get_gc_master_record()::GCMasterRecord
+    return unsafe_load(@cuda_global_ptr("gc_master_record", GCMasterRecord))
+end
+
+# Gets the thread ID of the current thread.
+@inline function get_thread_id()
+    return threadIdx().x
+end
+
+# Gets a pointer to the first element in the root buffer for this thread.
+@inline function get_root_buffer_start()::Ptr{ObjectRef}
+    master_record = get_gc_master_record()
+    offset = master_record.root_buffer_capacity * get_thread_id()
+    return master_record.root_buffers + offset * sizeof(ObjectRef)
+end
+
+"""
+    new_gc_frame(size::UInt32)::Ptr{ObjectRef}
+
+Allocates a new GC frame.
+"""
+function new_gc_frame(size::UInt32)::Ptr{ObjectRef}
+    nocollect() do
+        master_record = get_gc_master_record()
+
+        # Get the current size of the root buffer.
+        current_size = unsafe_load(
+            master_record.root_buffer_sizes,
+            get_thread_id())
+
+        # The size of a root buffer should never exceed its capacity.
+        @cuassert(current_size + size <= master_record.root_buffer_capacity)
+
+        return get_root_buffer_start() + current_size * sizeof(ObjectRef)
+    end
+end
+
+"""
+    push_gc_frame(size::UInt32)
+
+Registers a GC frame with the garbage collector.
+"""
+function push_gc_frame(size::UInt32)
+    nocollect() do
+        master_record = get_gc_master_record()
+
+        # Get the current size of the root buffer.
+        current_size = unsafe_load(
+            master_record.root_buffer_sizes,
+            get_thread_id())
+
+        # Add the new size to the current root buffer size.
+        unsafe_store!(
+            master_record.root_buffer_sizes,
+            current_size + size,
+            get_thread_id())
+    end
+end
+
+"""
+    pop_gc_frame(size::UInt32)
+
+Deregisters a GC frame.
+"""
+function pop_gc_frame(size::UInt32)
+    nocollect() do
+        master_record = get_gc_master_record()
+
+        # Get the current size of the root buffer.
+        current_size = unsafe_load(
+            master_record.root_buffer_sizes,
+            get_thread_id())
+
+        # Subtract the size from the current root buffer size.
+        unsafe_store!(
+            master_record.root_buffer_sizes,
+            current_size - size,
+            get_thread_id())
+    end
 end
 
 const gc_align = Csize_t(16)
@@ -230,7 +315,7 @@ Allocates a blob of memory that is managed by the garbage collector.
 This function is designed to be called by the device.
 """
 function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
-    master_record = unsafe_load(get_gc_master_record())
+    master_record = get_gc_master_record()
 
     # Try to malloc the object without host intervention.
     ptr = gc_malloc_local(master_record.global_arena, bytesize)
