@@ -63,12 +63,21 @@ struct GCArenaRecord
     allocation_list_head::Ptr{GCAllocationRecord}
 end
 
+# A reference to a Julia object.
+const ObjectRef = Ptr{Nothing}
+
 # A data structure that contains global GC info. This data
 # structure is designed to be immutable: it should not be changed
 # once the host has set it up.
 struct GCMasterRecord
     # A pointer to the global GC arena.
     global_arena::Ptr{GCArenaRecord}
+
+    # The size of a GC root buffer.
+    root_buffer_size::Csize_t
+
+    # A pointer to a list of buffers that can be used to store GC roots in.
+    root_buffers::Ptr{ObjectRef}
 end
 
 # Gets the global GC interrupt lock.
@@ -251,35 +260,55 @@ function gc_collect()
     end
 end
 
-# Set the initial size of the chunk of memory allocated to the
-# GC to 16MiB.
-const initial_gc_memory_size = 16 * (1 << 20)
+# The initial size of the GC heap, currently 16 MiB.
+const initial_gc_heap_size = 16 * (1 << 20)
+
+# The default size of a root buffer, i.e., the max number of
+# roots that can be stored per thread. Currently set to
+# 256 roots. That's 2 KiB of roots per thread.
+const default_root_buffer_size = 256
 
 # Initializes GC memory and produces a master record.
-function gc_init(buffer::Array{UInt8, 1})::GCMasterRecord
-    buffer_ptr = pointer(buffer, 1)
+function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_size::Integer = default_root_buffer_size)::GCMasterRecord
+    # Compute the total size of all root buffers.
+    total_root_buffer_size = sizeof(ObjectRef) * default_root_buffer_size * thread_count
+    root_buffer_ptr = Base.unsafe_convert(Ptr{ObjectRef}, pointer(buffer, 1))
+
+    # Compute a pointer to the start of the heap.
+    heap_start_ptr = pointer(buffer, total_root_buffer_size + 1)
+    global_arena_size = length(buffer) - total_root_buffer_size - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord)
 
     # Create a single free list entry.
-    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, buffer_ptr + sizeof(GCArenaRecord))
+    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, heap_start_ptr + sizeof(GCArenaRecord))
     unsafe_store!(
         first_entry_ptr,
-        GCAllocationRecord(
-            length(buffer) - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord),
-            C_NULL))
+        GCAllocationRecord(global_arena_size, C_NULL))
 
     # Set up the main GC data structure.
-    global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, buffer_ptr)
+    global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, heap_start_ptr)
     unsafe_store!(
         global_arena,
         GCArenaRecord(first_entry_ptr, C_NULL))
 
-    return GCMasterRecord(global_arena)
+    return GCMasterRecord(global_arena, root_buffer_size, root_buffer_ptr)
 end
 
 # Collects garbage. This function is designed to be called by
 # the host, not by the device.
 function gc_collect_impl(master_record::GCMasterRecord)
     println("GC collections are not implemented yet.")
+end
+
+# Examines a keyword argument list and gets either the value
+# assigned to a key or a default value.
+function get_kwarg_or_default(kwarg_list, key::Symbol, default)
+    for kwarg in kwarg_list
+        arg_key, val = kwarg.args
+        if arg_key == key
+            return val
+        end
+    end
+    return default
 end
 
 """
@@ -316,13 +345,10 @@ macro cuda_gc(ex...)
     vars, var_exprs = CUDAnative.assign_args!(code, args)
 
     # Find the stream on which the kernel is to be scheduled.
-    stream = CuDefaultStream()
-    for kwarg in call_kwargs
-        key, val = kwarg.args
-        if key == :stream
-            stream = val
-        end
-    end
+    stream = get_kwarg_or_default(call_kwargs, :stream, CuDefaultStream())
+
+    # Get the total number of threads.
+    thread_count = get_kwarg_or_default(call_kwargs, :threads, 1)
 
     # convert the arguments, call the compiler and launch the kernel
     # while keeping the original arguments alive
@@ -333,8 +359,9 @@ macro cuda_gc(ex...)
                 local host_interrupt_array, device_interrupt_buffer = alloc_shared_array((1,), ready)
 
                 # Allocate a shared buffer for GC memory.
-                local host_gc_array, device_gc_buffer = alloc_shared_array((initial_gc_memory_size,), UInt8(0))
-                local master_record = gc_init(host_gc_array)
+                local gc_memory_size = initial_gc_heap_size + sizeof(ObjectRef) * default_root_buffer_size * $(esc(thread_count))
+                local host_gc_array, device_gc_buffer = alloc_shared_array((gc_memory_size,), UInt8(0))
+                local master_record = gc_init(host_gc_array, $(esc(thread_count)))
 
                 # Define a kernel initialization function.
                 local function kernel_init(kernel)
