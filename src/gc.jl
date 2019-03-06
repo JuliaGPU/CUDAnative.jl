@@ -57,6 +57,9 @@ end
 struct GCMemoryInfo
     # The head of the free list.
     free_list_head::Ptr{GCAllocationRecord}
+
+    # The head of the allocation list.
+    allocation_list_head::Ptr{GCAllocationRecord}
 end
 
 # Gets the global GC interrupt lock.
@@ -84,7 +87,12 @@ end
 
 # Tries to use a free-list entry to allocate a chunk of data of size `bytesize`.
 # Updates the free list if the allocation succeeds. Returns a null pointer otherwise.
-function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCAllocationRecord}}, entry::Ptr{GCAllocationRecord}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_use_free_list_entry(
+    entry_ptr::Ptr{Ptr{GCAllocationRecord}},
+    allocation_list_ptr::Ptr{Ptr{GCAllocationRecord}},
+    entry::Ptr{GCAllocationRecord},
+    bytesize::Csize_t,)::Ptr{UInt8}
+
     entry_data = unsafe_load(entry)
     if entry_data.size < bytesize
         # The entry is just too small. Return a `null` pointer.
@@ -133,6 +141,18 @@ function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCAllocationRecord}}, entry::
         unsafe_store!(entry_ptr, entry_data.next)
     end
 
+    # At this point, all we need to do is update the allocation record to
+    # reflect the fact that it now represents an allocated block instead of
+    # a free block.
+
+    # Set the `next` pointer to the value stored at the allocation list pointer.
+    unsafe_store!(
+        @get_field_pointer(entry, :next)::Ptr{Ptr{GCAllocationRecord}},
+        unsafe_load(allocation_list_ptr))
+
+    # Update the allocation list pointer to point to the entry.
+    unsafe_store!(allocation_list_ptr, entry)
+
     return data_address
 end
 
@@ -141,9 +161,13 @@ end
 # memory can be found.
 #
 # `free_list_ptr` is a pointer to the head of the free list.
+# `allocation_list_ptr` is a pointer to the head of the allocation list.
 #
 # This function is not thread-safe.
-function gc_malloc_from_free_list(free_list_ptr::Ptr{Ptr{GCAllocationRecord}}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_from_free_list(
+    free_list_ptr::Ptr{Ptr{GCAllocationRecord}},
+    allocation_list_ptr::Ptr{Ptr{GCAllocationRecord}},
+    bytesize::Csize_t)::Ptr{UInt8}
     # To allocate memory, we will walk the free list until we find a suitable candidate.
     while free_list_ptr != C_NULL
         free_list_item = unsafe_load(free_list_ptr)
@@ -152,7 +176,7 @@ function gc_malloc_from_free_list(free_list_ptr::Ptr{Ptr{GCAllocationRecord}}, b
             break
         end
 
-        result = gc_use_free_list_entry(free_list_ptr, free_list_item, bytesize)
+        result = gc_use_free_list_entry(free_list_ptr, allocation_list_ptr, free_list_item, bytesize)
         if result != C_NULL
             return result
         end
@@ -170,7 +194,8 @@ function gc_malloc_local(gc_info::Ptr{GCMemoryInfo}, bytesize::Csize_t)::Ptr{UIn
     # lock.
     writer_locked(get_interrupt_lock()) do
         free_list_ptr = @get_field_pointer(gc_info, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
-        return gc_malloc_from_free_list(free_list_ptr, bytesize)
+        allocation_list_ptr = @get_field_pointer(gc_info, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        return gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
     end
 end
 
@@ -237,7 +262,7 @@ function gc_init(buffer::Array{UInt8, 1})
     gc_info = Base.unsafe_convert(Ptr{GCMemoryInfo}, buffer_ptr)
     unsafe_store!(
         gc_info,
-        GCMemoryInfo(first_entry_ptr))
+        GCMemoryInfo(first_entry_ptr, C_NULL))
 end
 
 # Collects garbage. This function is designed to be called by
