@@ -56,6 +56,9 @@ end
 # a section of the heap that is managed by the GC. Every arena
 # has its own free list and allocation list.
 struct GCArenaRecord
+    # The allocation lock for the arena.
+    lock_state::ReaderWriterLockState
+
     # The head of the free list.
     free_list_head::Ptr{GCAllocationRecord}
 
@@ -93,10 +96,16 @@ end
 
 # Runs a function in such a way that no collection phases will
 # run as long as the function is executing. Use with care: this
-# function acquires the GC interrupt lock in reader mode, so careless
+# macro acquires the GC interrupt lock in reader mode, so careless
 # use may cause deadlocks.
-@inline function nocollect(func::Function)
-    return reader_locked(func, get_interrupt_lock())
+macro nocollect(func)
+    quote
+        local @inline function lock_callback()
+            $(esc(func))
+        end
+
+        reader_locked(lock_callback, get_interrupt_lock())
+    end
 end
 
 # Gets the GC master record.
@@ -116,25 +125,25 @@ end
     return master_record.root_buffers + offset * sizeof(ObjectRef)
 end
 
+# Same as 'new_gc_frame_impl', but does not disable collections.
+function new_gc_frame_impl(size::UInt32)::Ptr{ObjectRef}
+    master_record = get_gc_master_record()
+
+    # Get the current size of the root buffer.
+    current_size = unsafe_load(
+        master_record.root_buffer_sizes,
+        get_thread_id())
+
+    return get_root_buffer_start() + current_size * sizeof(ObjectRef)
+end
+
 """
     new_gc_frame(size::UInt32)::Ptr{ObjectRef}
 
 Allocates a new GC frame.
 """
 function new_gc_frame(size::UInt32)::Ptr{ObjectRef}
-    nocollect() do
-        master_record = get_gc_master_record()
-
-        # Get the current size of the root buffer.
-        current_size = unsafe_load(
-            master_record.root_buffer_sizes,
-            get_thread_id())
-
-        # The size of a root buffer should never exceed its capacity.
-        @cuassert(current_size + size <= master_record.root_buffer_capacity)
-
-        return get_root_buffer_start() + current_size * sizeof(ObjectRef)
-    end
+    @nocollect new_gc_frame_impl(size)
 end
 
 """
@@ -143,7 +152,7 @@ end
 Registers a GC frame with the garbage collector.
 """
 function push_gc_frame(size::UInt32)
-    nocollect() do
+    @nocollect begin
         master_record = get_gc_master_record()
 
         # Get the current size of the root buffer.
@@ -165,7 +174,7 @@ end
 Deregisters a GC frame.
 """
 function pop_gc_frame(size::UInt32)
-    nocollect() do
+    @nocollect begin
         master_record = get_gc_master_record()
 
         # Get the current size of the root buffer.
@@ -299,12 +308,25 @@ end
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
 function gc_malloc_local(arena::Ptr{GCArenaRecord}, bytesize::Csize_t)::Ptr{UInt8}
-    # TODO: reader-lock on the interrupt lock and writer-lock on the GC's
-    # lock.
-    writer_locked(get_interrupt_lock()) do
-        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
-        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
-        return gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
+    # Disable collections and acquire the arena's lock.
+    @nocollect begin
+        arena_lock = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
+        result_ptr = writer_locked(arena_lock) do
+            # Allocate a suitable region of memory.
+            free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
+            allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
+            gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
+        end
+
+        # If the resulting pointer is non-null, then we'll write it to a temporary GC frame.
+        # Our reasoning for doing this is that doing so ensures that the allocated memory
+        # won't get collected by the GC before the caller has a chance to add it to its
+        # own GC frame.
+        if result_ptr != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
+            gc_frame = new_gc_frame_impl(UInt32(1))
+            unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, result_ptr))
+        end
+        return result_ptr
     end
 end
 
@@ -384,7 +406,7 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_cap
     global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, heap_start_ptr)
     unsafe_store!(
         global_arena,
-        GCArenaRecord(first_entry_ptr, C_NULL))
+        GCArenaRecord(0, first_entry_ptr, C_NULL))
 
     return GCMasterRecord(global_arena, root_buffer_capacity, sizebuf_ptr, rootbuf_ptr)
 end
