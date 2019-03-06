@@ -69,6 +69,9 @@ end
 # A reference to a Julia object.
 const ObjectRef = Ptr{Nothing}
 
+# A GC frame is just a pointer to an array of Julia objects.
+const GCFrame = Ptr{ObjectRef}
+
 # A data structure that contains global GC info. This data
 # structure is designed to be immutable: it should not be changed
 # once the host has set it up.
@@ -118,56 +121,11 @@ end
     return threadIdx().x
 end
 
-const GCFrame = Ptr{ObjectRef}
-
-# Same as 'new_gc_frame_impl', but does not disable collections.
+# Same as 'new_gc_frame', but does not disable collections.
 function new_gc_frame_impl(size::UInt32)::GCFrame
     master_record = get_gc_master_record()
     # Return the root buffer tip: that's where the new GC frame starts.
     return unsafe_load(master_record.root_buffer_fingers, get_thread_id())
-end
-
-"""
-    new_gc_frame(size::UInt32)::Ptr{ObjectRef}
-
-Allocates a new GC frame.
-"""
-function new_gc_frame(size::UInt32)::GCFrame
-    @nocollect new_gc_frame_impl(size)
-end
-
-"""
-    push_gc_frame(gc_frame::GCFrame, size::UInt32)
-
-Registers a GC frame with the garbage collector.
-"""
-function push_gc_frame(gc_frame::GCFrame, size::UInt32)
-    @nocollect begin
-        master_record = get_gc_master_record()
-
-        # Update the root buffer tip.
-        unsafe_store!(
-            master_record.root_buffer_fingers,
-            gc_frame + size * sizeof(ObjectRef),
-            get_thread_id())
-    end
-end
-
-"""
-    pop_gc_frame(gc_frame::GCFrame)
-
-Deregisters a GC frame.
-"""
-function pop_gc_frame(gc_frame::GCFrame)
-    @nocollect begin
-        master_record = get_gc_master_record()
-
-        # Update the root buffer tip.
-        unsafe_store!(
-            master_record.root_buffer_fingers,
-            gc_frame,
-            get_thread_id())
-    end
 end
 
 const gc_align = Csize_t(16)

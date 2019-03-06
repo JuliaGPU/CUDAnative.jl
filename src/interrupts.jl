@@ -71,7 +71,7 @@ end
         # If the global hasn't been defined already, then we'll define
         # it in the global address space, i.e., address space one.
         global_var = GlobalVariable(mod, T_global, global_name_string, 1)
-        linkage!(global_var, LLVM.API.LLVMLinkOnceODRLinkage)
+        linkage!(global_var, LLVM.API.LLVMLinkOnceAnyLinkage)
         initializer!(global_var, LLVM.null(T_global))
     end
 

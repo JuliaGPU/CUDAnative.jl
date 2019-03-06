@@ -39,7 +39,7 @@ function compile(target::Symbol, job::CompilerJob;
 end
 
 function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
-                 optimize::Bool=true, strip::Bool=false)
+                 optimize::Bool=true, strip::Bool=false, internalize::Bool=true)
     ## Julia IR
 
     @timeit to[] "Julia front-end" begin
@@ -86,7 +86,7 @@ function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
         end
 
         if optimize
-            kernel = @timeit to[] "optimization" optimize!(job, ir, kernel)
+            kernel = @timeit to[] "optimization" optimize!(job, ir, kernel; internalize=internalize)
         end
 
         if libraries
@@ -138,7 +138,7 @@ function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
             for dyn_job in keys(worklist)
                 # cached compilation
                 dyn_kernel_fn = get!(kernels, dyn_job) do
-                    dyn_ir, dyn_kernel = codegen(:llvm, dyn_job; optimize=optimize, strip=strip)
+                    dyn_ir, dyn_kernel = codegen(:llvm, dyn_job; optimize=optimize, strip=strip, internalize=internalize)
                     dyn_kernel_fn = LLVM.name(dyn_kernel)
                     dyn_kernel_ft = eltype(llvmtype(dyn_kernel))
                     link!(ir, dyn_ir)

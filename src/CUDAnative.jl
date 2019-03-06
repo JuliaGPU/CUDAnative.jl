@@ -33,15 +33,18 @@ include(joinpath("device", "llvm.jl"))
 include(joinpath("device", "runtime.jl"))
 include(joinpath("device", "libdevice.jl"))
 include(joinpath("device", "cuda_intrinsics.jl"))
-include(joinpath("device", "runtime_intrinsics.jl"))
 include(joinpath("device", "threading.jl"))
+
+# The interrupts and GC files need to be loaded _before_ the
+# runtime intrinsics file, because some runtime intrinsics
+# depend on the GC and the GC depends on interrupts.
+include("interrupts.jl")
+include("gc.jl")
+include(joinpath("device", "runtime_intrinsics.jl"))
 
 include("compiler.jl")
 include("execution.jl")
-include("interrupts.jl")
-include("gc.jl")
 include("reflection.jl")
-
 include("deprecated.jl")
 
 include("init.jl")

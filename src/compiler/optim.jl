@@ -1,6 +1,6 @@
 # LLVM IR optimization
 
-function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
+function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; internalize::Bool=true)
     tm = machine(job.cap, triple(mod))
 
     if job.kernel
@@ -10,7 +10,9 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     function initialize!(pm)
         add_library_info!(pm, triple(mod))
         add_transform_info!(pm, tm)
-        internalize!(pm, [LLVM.name(entry)])
+        if internalize
+            internalize!(pm, [LLVM.name(entry)])
+        end
     end
 
     global current_job
@@ -327,7 +329,6 @@ function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
     return changed
 end
 
-
 # lower object allocations to to PTX malloc
 #
 # this is a PoC implementation that is very simple: allocate, and never free. it also runs
@@ -383,7 +384,24 @@ function eager_lower_gc_frame!(fun::LLVM.Function)
 
         @compiler_assert isempty(uses(barrier)) job
     end
+end
 
+# Visits all calls to a particular intrinsic in a given LLVM module
+# and redirects those calls to a different function.
+# Returns a Boolean that tells if any calls were actually redirected.
+function redirect_calls_to!(from::AbstractString, to, mod::LLVM.Module)::Bool
+    changed = false
+    visit_calls_to(from, mod) do call, _
+        args = collect(operands(call))[1:end-1]
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            new_call = call!(builder, to, args)
+            replace_uses!(call, new_call)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+        changed = true
+    end
     return changed
 end
 
@@ -441,8 +459,6 @@ function lower_final_gc_intrinsics_nogc!(mod::LLVM.Module)
         ops = collect(operands(call))
         size = ops[1]
 
-        # Call the allocation function and bump the resulting pointer
-        # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
             ptr = array_alloca!(builder, T_alloca, size)
@@ -463,8 +479,6 @@ function lower_final_gc_intrinsics_nogc!(mod::LLVM.Module)
         frame = ops[1]
         offset = ops[2]
 
-        # Call the allocation function and bump the resulting pointer
-        # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
             ptr = gep!(builder, frame, [offset])
@@ -535,31 +549,8 @@ function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
     end
 
     # Next up: 'julia.new_gc_frame'. This intrinsic allocates a new GC frame.
-    # We'll lower it as an alloca and hope SSA construction and DCE passes
-    # get rid of the alloca. This is a reasonable thing to hope for because
-    # all intrinsics that may cause the GC frame to escape will be replaced by
-    # nops.
-    visit_calls_to("julia.new_gc_frame", mod) do call, new_gc_frame
-        new_gc_frame_ft = eltype(llvmtype(new_gc_frame))::LLVM.FunctionType
-        T_ret = return_type(new_gc_frame_ft)::LLVM.PointerType
-        T_alloca = eltype(T_ret)
-
-        # Decode the call.
-        ops = collect(operands(call))
-        size = ops[1]
-
-        # Call the allocation function and bump the resulting pointer
-        # so the headroom sits just in front of the returned pointer.
-        let builder = Builder(JuliaContext())
-            position!(builder, call)
-            ptr = array_alloca!(builder, T_alloca, size)
-            replace_uses!(call, ptr)
-            unsafe_delete!(LLVM.parent(call), call)
-            dispose(builder)
-        end
-
-        changed = true
-    end
+    # We actually have a call that implements this intrinsic. Let's use that.
+    changed |= redirect_calls_to!("julia.new_gc_frame", Runtime.get(:new_gc_frame), mod)
 
     # The 'julia.get_gc_frame_slot' is closely related to the previous
     # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
@@ -570,8 +561,6 @@ function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
         frame = ops[1]
         offset = ops[2]
 
-        # Call the allocation function and bump the resulting pointer
-        # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
             ptr = gep!(builder, frame, [offset])
@@ -583,15 +572,15 @@ function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
         changed = true
     end
 
-    # The 'julia.push_gc_frame' registers a GC frame with the GC. We
-    # don't have a GC, so we can just delete calls to this intrinsic!
-    changed |= delete_calls_to!("julia.push_gc_frame", mod)
+    # The 'julia.push_gc_frame' registers a GC frame with the GC. We will
+    # call a function that does just this.
+    changed |= redirect_calls_to!("julia.push_gc_frame", Runtime.get(:push_gc_frame), mod)
 
-    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC, so
-    # we can just delete calls to this intrinsic, too.
-    changed |= delete_calls_to!("julia.pop_gc_frame", mod)
+    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC. We again
+    # have a function in the runtime library.
+    changed |= redirect_calls_to!("julia.pop_gc_frame", Runtime.get(:pop_gc_frame), mod)
 
-    # Ditto for 'julia.queue_gc_root'.
+    # Delete calls to 'julia.queue_gc_root'.
     changed |= delete_calls_to!("julia.queue_gc_root", mod)
 
     return changed
