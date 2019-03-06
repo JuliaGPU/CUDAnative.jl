@@ -52,9 +52,10 @@ macro get_field_pointer(base_pointer, field_name)
     :(get_field_pointer_impl($(esc(base_pointer)), Val($field_name)))
 end
 
-# A data structure that contains information relevant
-# to the GC's inner workings.
-struct GCMemoryInfo
+# A data structure that describes a single GC "arena", i.e.,
+# a section of the heap that is managed by the GC. Every arena
+# has its own free list and allocation list.
+struct GCArenaRecord
     # The head of the free list.
     free_list_head::Ptr{GCAllocationRecord}
 
@@ -62,14 +63,22 @@ struct GCMemoryInfo
     allocation_list_head::Ptr{GCAllocationRecord}
 end
 
+# A data structure that contains global GC info. This data
+# structure is designed to be immutable: it should not be changed
+# once the host has set it up.
+struct GCMasterRecord
+    # A pointer to the global GC arena.
+    global_arena::Ptr{GCArenaRecord}
+end
+
 # Gets the global GC interrupt lock.
 @inline function get_interrupt_lock()::ReaderWriterLock
     return ReaderWriterLock(@cuda_global_ptr("gc_interrupt_lock", ReaderWriterLockState))
 end
 
-# Gets a pointer to the global GC info data structure pointer.
-@inline function get_gc_info_pointer()::Ptr{Ptr{GCMemoryInfo}}
-    return @cuda_global_ptr("gc_info_pointer", Ptr{GCMemoryInfo})
+# Gets a pointer to the GC master record.
+@inline function get_gc_master_record()::Ptr{GCMasterRecord}
+    return @cuda_global_ptr("gc_master_record", GCMasterRecord)
 end
 
 const gc_align = Csize_t(16)
@@ -186,15 +195,15 @@ function gc_malloc_from_free_list(
     return C_NULL
 end
 
-# Tries to allocate a chunk of memory.
+# Tries to allocate a chunk of memory in a particular GC arena.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
-function gc_malloc_local(gc_info::Ptr{GCMemoryInfo}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_local(arena::Ptr{GCArenaRecord}, bytesize::Csize_t)::Ptr{UInt8}
     # TODO: reader-lock on the interrupt lock and writer-lock on the GC's
     # lock.
     writer_locked(get_interrupt_lock()) do
-        free_list_ptr = @get_field_pointer(gc_info, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
-        allocation_list_ptr = @get_field_pointer(gc_info, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
         return gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
     end
 end
@@ -206,10 +215,10 @@ Allocates a blob of memory that is managed by the garbage collector.
 This function is designed to be called by the device.
 """
 function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
-    gc_info = unsafe_load(get_gc_info_pointer())
+    master_record = unsafe_load(get_gc_master_record())
 
     # Try to malloc the object without host intervention.
-    ptr = gc_malloc_local(gc_info, bytesize)
+    ptr = gc_malloc_local(master_record.global_arena, bytesize)
     if ptr != C_NULL
         return ptr
     end
@@ -218,7 +227,7 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     gc_collect()
 
     # Try to malloc again.
-    ptr = gc_malloc_local(gc_info, bytesize)
+    ptr = gc_malloc_local(master_record.global_arena, bytesize)
     if ptr != C_NULL
         return ptr
     end
@@ -246,28 +255,30 @@ end
 # GC to 16MiB.
 const initial_gc_memory_size = 16 * (1 << 20)
 
-# Initializes GC memory.
-function gc_init(buffer::Array{UInt8, 1})
+# Initializes GC memory and produces a master record.
+function gc_init(buffer::Array{UInt8, 1})::GCMasterRecord
     buffer_ptr = pointer(buffer, 1)
 
     # Create a single free list entry.
-    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, buffer_ptr + sizeof(GCMemoryInfo))
+    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, buffer_ptr + sizeof(GCArenaRecord))
     unsafe_store!(
         first_entry_ptr,
         GCAllocationRecord(
-            length(buffer) - sizeof(GCAllocationRecord) - sizeof(GCMemoryInfo),
+            length(buffer) - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord),
             C_NULL))
 
     # Set up the main GC data structure.
-    gc_info = Base.unsafe_convert(Ptr{GCMemoryInfo}, buffer_ptr)
+    global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, buffer_ptr)
     unsafe_store!(
-        gc_info,
-        GCMemoryInfo(first_entry_ptr, C_NULL))
+        global_arena,
+        GCArenaRecord(first_entry_ptr, C_NULL))
+
+    return GCMasterRecord(global_arena)
 end
 
 # Collects garbage. This function is designed to be called by
 # the host, not by the device.
-function gc_collect_impl(info::Ptr{GCMemoryInfo})
+function gc_collect_impl(master_record::GCMasterRecord)
     println("GC collections are not implemented yet.")
 end
 
@@ -323,7 +334,7 @@ macro cuda_gc(ex...)
 
                 # Allocate a shared buffer for GC memory.
                 local host_gc_array, device_gc_buffer = alloc_shared_array((initial_gc_memory_size,), UInt8(0))
-                gc_init(host_gc_array)
+                local master_record = gc_init(host_gc_array)
 
                 # Define a kernel initialization function.
                 local function kernel_init(kernel)
@@ -339,10 +350,10 @@ macro cuda_gc(ex...)
                         end
                     end
 
-                    # Set the GC state pointer.
+                    # Set the GC master record.
                     try
-                        global_handle = CuGlobal{CuPtr{GCMemoryInfo}}(kernel.mod, "gc_info_pointer")
-                        set(global_handle, CuPtr{GCMemoryInfo}(device_gc_buffer.ptr))
+                        global_handle = CuGlobal{GCMasterRecord}(kernel.mod, "gc_master_record")
+                        set(global_handle, master_record)
                     catch exception
                         # The GC info pointer may not have been declared (because it is unused).
                         # In that case, we should do nothing.
@@ -353,7 +364,7 @@ macro cuda_gc(ex...)
                 end
 
                 local function handle_interrupt()
-                    gc_collect_impl(Ptr{GCMemoryInfo}(pointer(host_gc_array, 1)))
+                    gc_collect_impl(master_record)
                 end
 
                 try
