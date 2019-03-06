@@ -32,7 +32,11 @@ struct GCAllocationRecord
     # The size of the memory region this allocation record precedes.
     # This size does not include the allocation record itself.
     size::Csize_t
-    # A pointer to the next entry in the free list.
+
+    # A pointer to the next allocation record in the list. If this
+    # allocation record is part of the free list, then this pointer
+    # points to the next free list entry; otherwise, it points to the
+    # next entry in the list of allocated blocks.
     next::Ptr{GCAllocationRecord}
 end
 
@@ -170,8 +174,12 @@ function gc_malloc_local(gc_info::Ptr{GCMemoryInfo}, bytesize::Csize_t)::Ptr{UIn
     end
 end
 
-# Allocates a blob of memory that is managed by the garbage collector.
-# This function is designed to be called by the device.
+"""
+    gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
+
+Allocates a blob of memory that is managed by the garbage collector.
+This function is designed to be called by the device.
+"""
 function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     gc_info = unsafe_load(get_gc_info_pointer())
 
@@ -182,9 +190,7 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     end
 
     # We're out of memory. Ask the host to step in.
-    writer_locked(get_interrupt_lock()) do
-        interrupt_or_wait()
-    end
+    gc_collect()
 
     # Try to malloc again.
     ptr = gc_malloc_local(gc_info, bytesize)
@@ -196,6 +202,19 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", bytesize)
     # throw(OutOfMemoryError())
     return C_NULL
+end
+
+"""
+    gc_collect()
+
+Triggers a garbage collection phase. This function is designed
+to be called by the device rather than by the host.
+"""
+function gc_collect()
+    writer_locked(get_interrupt_lock()) do
+        interrupt_or_wait()
+        threadfence_system()
+    end
 end
 
 # Set the initial size of the chunk of memory allocated to the
@@ -221,8 +240,9 @@ function gc_init(buffer::Array{UInt8, 1})
         GCMemoryInfo(first_entry_ptr))
 end
 
-# Triggers a GC collection.
-function gc_collect(info::Ptr{GCMemoryInfo})
+# Collects garbage. This function is designed to be called by
+# the host, not by the device.
+function gc_collect_impl(info::Ptr{GCMemoryInfo})
     println("GC collections are not implemented yet.")
 end
 
@@ -308,7 +328,7 @@ macro cuda_gc(ex...)
                 end
 
                 local function handle_interrupt()
-                    gc_collect(Ptr{GCMemoryInfo}(pointer(host_gc_array, 1)))
+                    gc_collect_impl(Ptr{GCMemoryInfo}(pointer(host_gc_array, 1)))
                 end
 
                 try
