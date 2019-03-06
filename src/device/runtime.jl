@@ -225,5 +225,16 @@ for (T, t) in [Int8   => :int8,  Int16  => :int16,  Int32  => :int32,  Int64  =>
     end
 end
 
+"""
+    gc_malloc_object(bytesize::Csize_t)
+
+Allocates an object that is managed by the garbage collector.
+This function is designed to be called by the device.
+"""
+function gc_malloc_object(bytesize::Csize_t)
+    return unsafe_pointer_to_objref(gc_malloc(bytesize))
+end
+
+compile(gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
 
 end
