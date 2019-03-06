@@ -5,6 +5,13 @@
 # Simple memory allocation is underway. Memory allocation currently
 # uses a simple free-list.
 #
+# MEMORY ALLOCATION
+#
+# The GC's allocator uses free lists, i.e., the allocator maintains
+# a list of all blocks that have not been allocated. Additionally,
+# the allocator also maintains a list of all allocated blocks, so
+# the collector knows which blocks it can free.
+#
 # END GOAL
 #
 # The CUDAnative GC is a precise, non-moving, mark-and-sweep GC that runs
@@ -19,15 +26,14 @@
 
 export @cuda_gc, gc_malloc
 
-# An entry in the GC's free list. Every entry is placed at the
-# start of an free memory chunk. The `next` pointer of a GC free
-# list entry is aligned to a 16-byte boundary.
-struct GCFreeListEntry
-    # The size of the entry. This size does not include the entry's
-    # `size` field, but it does include the `next` field.
+# A data structure that precedes every chunk of memory that has been
+# allocated or put into the free list.
+struct GCAllocationRecord
+    # The size of the memory region this allocation record precedes.
+    # This size does not include the allocation record itself.
     size::Csize_t
     # A pointer to the next entry in the free list.
-    next::Ptr{GCFreeListEntry}
+    next::Ptr{GCAllocationRecord}
 end
 
 @generated function get_field_pointer_impl(base_pointer::Ptr{TBase}, ::Val{field_name}) where {TBase, field_name}
@@ -46,7 +52,7 @@ end
 # to the GC's inner workings.
 struct GCMemoryInfo
     # The head of the free list.
-    free_list_head::Ptr{GCFreeListEntry}
+    free_list_head::Ptr{GCAllocationRecord}
 end
 
 # Gets the global GC interrupt lock.
@@ -74,7 +80,7 @@ end
 
 # Tries to use a free-list entry to allocate a chunk of data of size `bytesize`.
 # Updates the free list if the allocation succeeds. Returns a null pointer otherwise.
-function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCFreeListEntry}}, entry::Ptr{GCFreeListEntry}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCAllocationRecord}}, entry::Ptr{GCAllocationRecord}, bytesize::Csize_t)::Ptr{UInt8}
     entry_data = unsafe_load(entry)
     if entry_data.size < bytesize
         # The entry is just too small. Return a `null` pointer.
@@ -101,19 +107,19 @@ function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCFreeListEntry}}, entry::Ptr
 
     # If we can place a new entry just past the allocation, then we should
     # by all means do so.
-    if new_entry_address + sizeof(GCFreeListEntry) < end_address
+    if new_entry_address + sizeof(GCAllocationRecord) < end_address
         # Create a new free list entry.
         new_entry_size = Csize_t(end_address) - Csize_t(new_data_address)
-        new_entry_ptr = Base.unsafe_convert(Ptr{GCFreeListEntry}, new_entry_address)
+        new_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, new_entry_address)
         unsafe_store!(
             new_entry_ptr,
-            GCFreeListEntry(new_entry_size, entry_data.next))
+            GCAllocationRecord(new_entry_size, entry_data.next))
 
         # Update this entry's `size` field to reflect the new entry's space
         # requirements.
         unsafe_store!(
             @get_field_pointer(entry, :size)::Ptr{Csize_t},
-            entry_data.size - new_entry_size - sizeof(GCFreeListEntry))
+            entry_data.size - new_entry_size - sizeof(GCAllocationRecord))
 
         # Update the free list pointer.
         unsafe_store!(entry_ptr, new_entry_ptr)
@@ -133,7 +139,7 @@ end
 # `free_list_ptr` is a pointer to the head of the free list.
 #
 # This function is not thread-safe.
-function gc_malloc_from_free_list(free_list_ptr::Ptr{Ptr{GCFreeListEntry}}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_from_free_list(free_list_ptr::Ptr{Ptr{GCAllocationRecord}}, bytesize::Csize_t)::Ptr{UInt8}
     # To allocate memory, we will walk the free list until we find a suitable candidate.
     while free_list_ptr != C_NULL
         free_list_item = unsafe_load(free_list_ptr)
@@ -147,7 +153,7 @@ function gc_malloc_from_free_list(free_list_ptr::Ptr{Ptr{GCFreeListEntry}}, byte
             return result
         end
 
-        free_list_ptr = @get_field_pointer(free_list_item, :next)::Ptr{Ptr{GCFreeListEntry}}
+        free_list_ptr = @get_field_pointer(free_list_item, :next)::Ptr{Ptr{GCAllocationRecord}}
     end
     return C_NULL
 end
@@ -159,7 +165,7 @@ function gc_malloc_local(gc_info::Ptr{GCMemoryInfo}, bytesize::Csize_t)::Ptr{UIn
     # TODO: reader-lock on the interrupt lock and writer-lock on the GC's
     # lock.
     writer_locked(get_interrupt_lock()) do
-        free_list_ptr = @get_field_pointer(gc_info, :free_list_head)::Ptr{Ptr{GCFreeListEntry}}
+        free_list_ptr = @get_field_pointer(gc_info, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
         return gc_malloc_from_free_list(free_list_ptr, bytesize)
     end
 end
@@ -201,10 +207,10 @@ function gc_init(buffer::Array{UInt8, 1})
     buffer_ptr = pointer(buffer, 1)
 
     # Create a single free list entry.
-    first_entry_ptr = Base.unsafe_convert(Ptr{GCFreeListEntry}, buffer_ptr + sizeof(GCMemoryInfo))
+    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, buffer_ptr + sizeof(GCMemoryInfo))
     unsafe_store!(
         first_entry_ptr,
-        GCFreeListEntry(
+        GCAllocationRecord(
             length(buffer) - sizeof(Csize_t) - sizeof(GCMemoryInfo),
             C_NULL))
 
