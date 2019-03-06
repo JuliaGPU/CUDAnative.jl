@@ -63,15 +63,16 @@ end
     mod = LLVM.parent(llvm_f)
 
     # Figure out if the global has been defined already.
-    globalSet = LLVM.globals(mod)
+    global_set = LLVM.globals(mod)
     global_name_string = String(global_name)
-    if haskey(globalSet, global_name_string)
-        global_var = globalSet[global_name_string]
+    if haskey(global_set, global_name_string)
+        global_var = global_set[global_name_string]
     else
         # If the global hasn't been defined already, then we'll define
         # it in the global address space, i.e., address space one.
         global_var = GlobalVariable(mod, T_global, global_name_string, 1)
-        LLVM.initializer!(global_var, LLVM.null(T_global))
+        linkage!(global_var, LLVM.API.LLVMLinkOnceODRLinkage)
+        initializer!(global_var, LLVM.null(T_global))
     end
 
     # Generate IR that computes the global's address.
