@@ -67,6 +67,14 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     # PTX-specific optimizations
     ModulePassManager() do pm
         initialize!(pm)
+        # lower intrinsics
+        if ctx.gc
+            add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
+        else
+            add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
+        end
+        aggressive_dce!(pm) # remove dead uses of ptls
+        add!(pm, ModulePass("LowerPTLS", lower_ptls!))
 
         # NVPTX's target machine info enables runtime unrolling,
         # but Julia's pass sequence only invokes the simple unroller.
@@ -379,10 +387,117 @@ function eager_lower_gc_frame!(fun::LLVM.Function)
     return changed
 end
 
-# Lowers the GC intrinsics produced by the LateLowerGCFrame pass. These
-# intrinsics are the last point at which we can intervene in the pipeline
-# before the passes that deal with them become CPU-specific.
-function lower_final_gc_intrinsics!(mod::LLVM.Module)
+# Lowers the GC intrinsics produced by the LateLowerGCFrame pass to
+# use the "malloc, never free" strategy. These intrinsics are the
+# last point at which we can intervene in the pipeline before the
+# passes that deal with them become CPU-specific.
+function lower_final_gc_intrinsics_nogc!(mod::LLVM.Module)
+    changed = false
+
+    # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
+    # store for an object, including headroom, but does not set the object's
+    # tag.
+    visit_calls_to("julia.gc_alloc_bytes", mod) do call, gc_alloc_bytes
+        gc_alloc_bytes_ft = eltype(llvmtype(gc_alloc_bytes))::LLVM.FunctionType
+        T_ret = return_type(gc_alloc_bytes_ft)::LLVM.PointerType
+        T_bitcast = LLVM.PointerType(T_ret, LLVM.addrspace(T_ret))
+
+        # Decode the call.
+        ops = collect(operands(call))
+        size = ops[2]
+
+        # We need to reserve a single pointer of headroom for the tag.
+        # (LateLowerGCFrame depends on us doing that.)
+        headroom = Runtime.tag_size
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            total_size = add!(builder, size, ConstantInt(Int32(headroom), JuliaContext()))
+            ptr = call!(builder, Runtime.get(:gc_pool_alloc), [total_size])
+            cast_ptr = bitcast!(builder, ptr, T_bitcast)
+            bumped_ptr = gep!(builder, cast_ptr, [ConstantInt(Int32(1), JuliaContext())])
+            replace_uses!(call, bumped_ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # Next up: 'julia.new_gc_frame'. This intrinsic allocates a new GC frame.
+    # We'll lower it as an alloca and hope SSA construction and DCE passes
+    # get rid of the alloca. This is a reasonable thing to hope for because
+    # all intrinsics that may cause the GC frame to escape will be replaced by
+    # nops.
+    visit_calls_to("julia.new_gc_frame", mod) do call, new_gc_frame
+        new_gc_frame_ft = eltype(llvmtype(new_gc_frame))::LLVM.FunctionType
+        T_ret = return_type(new_gc_frame_ft)::LLVM.PointerType
+        T_alloca = eltype(T_ret)
+
+        # Decode the call.
+        ops = collect(operands(call))
+        size = ops[1]
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = array_alloca!(builder, T_alloca, size)
+            replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.get_gc_frame_slot' is closely related to the previous
+    # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
+    # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
+    visit_calls_to("julia.get_gc_frame_slot", mod) do call, _
+        # Decode the call.
+        ops = collect(operands(call))
+        frame = ops[1]
+        offset = ops[2]
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = gep!(builder, frame, [offset])
+            replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.push_gc_frame' registers a GC frame with the GC. We
+    # don't have a GC, so we can just delete calls to this intrinsic!
+    changed |= delete_calls_to!("julia.push_gc_frame", mod)
+
+    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC, so
+    # we can just delete calls to this intrinsic, too.
+    changed |= delete_calls_to!("julia.pop_gc_frame", mod)
+
+    # Ditto for 'julia.queue_gc_root'.
+    changed |= delete_calls_to!("julia.queue_gc_root", mod)
+
+    return changed
+end
+
+"""
+lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
+
+An LLVM pass that lowers the GC intrinsics produced by the
+LateLowerGCFrame pass to use the GPU GC. These intrinsics are the
+last point at which we can intervene in the pipeline before the
+passes that deal with them become CPU-specific.
+"""
+function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
     changed = false
 
     # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates

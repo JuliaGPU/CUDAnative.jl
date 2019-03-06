@@ -516,7 +516,7 @@ macro cuda_gc(ex...)
                     # Standard kernel setup logic.
                     local kernel_args = CUDAnative.cudaconvert.(($(var_exprs...),))
                     local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
-                    local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; $(map(esc, compiler_kwargs)...))
+                    local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; gc = true, $(map(esc, compiler_kwargs)...))
                     CUDAnative.prepare_kernel(kernel; init=kernel_init, $(map(esc, env_kwargs)...))
                     kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
