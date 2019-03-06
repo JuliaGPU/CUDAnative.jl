@@ -73,10 +73,16 @@ struct GCMasterRecord
     # A pointer to the global GC arena.
     global_arena::Ptr{GCArenaRecord}
 
-    # The size of a GC root buffer.
-    root_buffer_size::Csize_t
+    # The maximum size of a GC root buffer, i.e., the maximum number
+    # of roots per thread.
+    root_buffer_capacity::Csize_t
+
+    # A pointer to a buffer that describes the number of elements
+    # currently in each root buffer.
+    root_buffer_sizes::Ptr{Csize_t}
 
     # A pointer to a list of buffers that can be used to store GC roots in.
+    # These root buffers are partitioned into GC frames later on.
     root_buffers::Ptr{ObjectRef}
 end
 
@@ -263,20 +269,25 @@ end
 # The initial size of the GC heap, currently 16 MiB.
 const initial_gc_heap_size = 16 * (1 << 20)
 
-# The default size of a root buffer, i.e., the max number of
+# The default capacity of a root buffer, i.e., the max number of
 # roots that can be stored per thread. Currently set to
 # 256 roots. That's 2 KiB of roots per thread.
-const default_root_buffer_size = 256
+const default_root_buffer_capacity = 256
 
 # Initializes GC memory and produces a master record.
-function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_size::Integer = default_root_buffer_size)::GCMasterRecord
-    # Compute the total size of all root buffers.
-    total_root_buffer_size = sizeof(ObjectRef) * default_root_buffer_size * thread_count
-    root_buffer_ptr = Base.unsafe_convert(Ptr{ObjectRef}, pointer(buffer, 1))
+function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_capacity::Integer = default_root_buffer_capacity)::GCMasterRecord
+    gc_memory_start_ptr = pointer(buffer, 1)
+    gc_memory_end_ptr = pointer(buffer, length(buffer))
+
+    # Set up root buffers.
+    sizebuf_bytesize = sizeof(Csize_t) * thread_count
+    sizebuf_ptr = gc_memory_start_ptr
+    rootbuf_bytesize = sizeof(ObjectRef) * default_root_buffer_capacity * thread_count
+    rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, sizebuf_ptr + sizebuf_bytesize)
 
     # Compute a pointer to the start of the heap.
-    heap_start_ptr = pointer(buffer, total_root_buffer_size + 1)
-    global_arena_size = length(buffer) - total_root_buffer_size - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord)
+    heap_start_ptr = rootbuf_ptr + rootbuf_bytesize
+    global_arena_size = Csize_t(gc_memory_end_ptr) - Csize_t(heap_start_ptr) - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord)
 
     # Create a single free list entry.
     first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, heap_start_ptr + sizeof(GCArenaRecord))
@@ -290,7 +301,7 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_siz
         global_arena,
         GCArenaRecord(first_entry_ptr, C_NULL))
 
-    return GCMasterRecord(global_arena, root_buffer_size, root_buffer_ptr)
+    return GCMasterRecord(global_arena, root_buffer_capacity, sizebuf_ptr, rootbuf_ptr)
 end
 
 # Collects garbage. This function is designed to be called by
@@ -359,7 +370,7 @@ macro cuda_gc(ex...)
                 local host_interrupt_array, device_interrupt_buffer = alloc_shared_array((1,), ready)
 
                 # Allocate a shared buffer for GC memory.
-                local gc_memory_size = initial_gc_heap_size + sizeof(ObjectRef) * default_root_buffer_size * $(esc(thread_count))
+                local gc_memory_size = initial_gc_heap_size + sizeof(ObjectRef) * default_root_buffer_capacity * $(esc(thread_count))
                 local host_gc_array, device_gc_buffer = alloc_shared_array((gc_memory_size,), UInt8(0))
                 local master_record = gc_init(host_gc_array, $(esc(thread_count)))
 
