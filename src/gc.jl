@@ -91,16 +91,16 @@ function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCAllocationRecord}}, entry::
     # to create a new entry from any unused memory in the entry.
 
     # Compute the address to return.
-    data_address = Base.unsafe_convert(Ptr{UInt8}, entry) + sizeof(Csize_t)
+    data_address = Base.unsafe_convert(Ptr{UInt8}, entry) + sizeof(GCAllocationRecord)
 
     # Compute the end of the free memory chunk.
     end_address = data_address + entry_data.size
 
-    # Compute the start address of the new free list entry. The `next`
-    # field of that entry needs to be aligned to a 16-byte boundary,
-    # but the `size` field doesn't.
+    # Compute the start address of the new free list entry. The data
+    # prefixed by the block needs to be aligned to a 16-byte boundary,
+    # but the block itself doesn't.
     new_data_address = align_to_boundary(data_address + bytesize)
-    new_entry_address = new_data_address - sizeof(Csize_t)
+    new_entry_address = new_data_address - sizeof(GCAllocationRecord)
     if new_entry_address < data_address + bytesize
         new_entry_address += gc_align
     end
@@ -119,7 +119,7 @@ function gc_use_free_list_entry(entry_ptr::Ptr{Ptr{GCAllocationRecord}}, entry::
         # requirements.
         unsafe_store!(
             @get_field_pointer(entry, :size)::Ptr{Csize_t},
-            entry_data.size - new_entry_size - sizeof(GCAllocationRecord))
+            Csize_t(new_entry_address) - Csize_t(data_address))
 
         # Update the free list pointer.
         unsafe_store!(entry_ptr, new_entry_ptr)
@@ -211,7 +211,7 @@ function gc_init(buffer::Array{UInt8, 1})
     unsafe_store!(
         first_entry_ptr,
         GCAllocationRecord(
-            length(buffer) - sizeof(Csize_t) - sizeof(GCMemoryInfo),
+            length(buffer) - sizeof(GCAllocationRecord) - sizeof(GCMemoryInfo),
             C_NULL))
 
     # Set up the main GC data structure.
