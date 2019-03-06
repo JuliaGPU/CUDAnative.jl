@@ -24,7 +24,7 @@
 #   * When the device runs out of GC memory, it requests an interrupt
 #     to mark and sweep.
 
-export @cuda_gc, gc_malloc
+export @cuda_gc, gc_malloc, gc_collect
 
 # A data structure that precedes every chunk of memory that has been
 # allocated or put into the free list.
@@ -75,11 +75,11 @@ struct GCMasterRecord
 
     # The maximum size of a GC root buffer, i.e., the maximum number
     # of roots per thread.
-    root_buffer_capacity::Csize_t
+    root_buffer_capacity::UInt32
 
     # A pointer to a buffer that describes the number of elements
     # currently in each root buffer.
-    root_buffer_sizes::Ptr{Csize_t}
+    root_buffer_sizes::Ptr{UInt32}
 
     # A pointer to a list of buffers that can be used to store GC roots in.
     # These root buffers are partitioned into GC frames later on.
@@ -280,7 +280,7 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_cap
     gc_memory_end_ptr = pointer(buffer, length(buffer))
 
     # Set up root buffers.
-    sizebuf_bytesize = sizeof(Csize_t) * thread_count
+    sizebuf_bytesize = sizeof(Int32) * thread_count
     sizebuf_ptr = gc_memory_start_ptr
     rootbuf_bytesize = sizeof(ObjectRef) * default_root_buffer_capacity * thread_count
     rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, sizebuf_ptr + sizebuf_bytesize)
