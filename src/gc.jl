@@ -118,7 +118,7 @@ end
 
 # Gets the thread ID of the current thread.
 @inline function get_thread_id()
-    return threadIdx().x
+    return (blockIdx().x - 1) * blockDim().x + threadIdx().x
 end
 
 """
