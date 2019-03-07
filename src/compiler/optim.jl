@@ -392,7 +392,7 @@ end
 function redirect_calls_to!(from::AbstractString, to, mod::LLVM.Module)::Bool
     changed = false
     visit_calls_to(from, mod) do call, _
-        args = collect(operands(call))[1:end-1]
+        args = collect(operands(call))[1:end - 1]
         let builder = Builder(JuliaContext())
             position!(builder, call)
             new_call = call!(builder, to, args)

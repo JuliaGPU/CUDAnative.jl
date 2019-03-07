@@ -251,7 +251,7 @@ compile(gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
 Allocates a new GC frame.
 """
 function new_gc_frame(size::UInt32)::GCFrame
-    @nocollect new_gc_frame_impl(size)
+    new_gc_frame_impl(size)
 end
 
 compile(new_gc_frame, Any, (Cuint,), T_pprjlvalue)
@@ -262,16 +262,14 @@ compile(new_gc_frame, Any, (Cuint,), T_pprjlvalue)
 Registers a GC frame with the garbage collector.
 """
 function push_gc_frame(gc_frame::GCFrame, size::UInt32)
-    @nocollect begin
-        master_record = get_gc_master_record()
+    master_record = get_gc_master_record()
 
-        # Update the root buffer tip.
-        unsafe_store!(
-            master_record.root_buffer_fingers,
-            gc_frame + size * sizeof(ObjectRef),
-            get_thread_id())
-        return
-    end
+    # Update the root buffer tip.
+    unsafe_store!(
+        master_record.root_buffer_fingers,
+        gc_frame + size * sizeof(ObjectRef),
+        get_thread_id())
+    return
 end
 
 compile(
@@ -287,16 +285,14 @@ compile(
 Deregisters a GC frame.
 """
 function pop_gc_frame(gc_frame::GCFrame)
-    @nocollect begin
-        master_record = get_gc_master_record()
+    master_record = get_gc_master_record()
 
-        # Update the root buffer tip.
-        unsafe_store!(
-            master_record.root_buffer_fingers,
-            gc_frame,
-            get_thread_id())
-        return
-    end
+    # Update the root buffer tip.
+    unsafe_store!(
+        master_record.root_buffer_fingers,
+        gc_frame,
+        get_thread_id())
+    return
 end
 
 compile(
