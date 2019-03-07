@@ -42,11 +42,6 @@ struct GCAllocationRecord
     next::Ptr{GCAllocationRecord}
 end
 
-# Gets a pointer to the first byte of data managed by an allocation record.
-function data_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
-    Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(GCAllocationRecord)
-end
-
 @generated function get_field_pointer_impl(base_pointer::Ptr{TBase}, ::Val{field_name}) where {TBase, field_name}
     index = Base.fieldindex(TBase, field_name)
     offset = Base.fieldoffset(TBase, index)
@@ -57,6 +52,16 @@ end
 # Gets a pointer to a particular field.
 macro get_field_pointer(base_pointer, field_name)
     :(get_field_pointer_impl($(esc(base_pointer)), Val($field_name)))
+end
+
+# Gets a pointer to the first byte of data managed by an allocation record.
+function data_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
+    Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(GCAllocationRecord)
+end
+
+# Gets a pointer to the first byte of data no longer managed by an allocation record.
+function data_end_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
+    data_pointer(record) + unsafe_load(@get_field_pointer(record, :size))
 end
 
 # A data structure that describes a single GC "arena", i.e.,
@@ -350,6 +355,16 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     return C_NULL
 end
 
+# Zero-fills a range of memory.
+function zero_fill!(start_ptr::Ptr{UInt8}, size::Csize_t)
+    ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), start_ptr, 0, size)
+end
+
+# Zero-fills a range of memory.
+function zero_fill!(start_ptr::Ptr{UInt8}, end_ptr::Ptr{UInt8})
+    zero_fill!(start_ptr, Csize_t(end_ptr) - Csize_t(start_ptr))
+end
+
 # Tries to free a block of memory from a particular arena. `record_ptr`
 # must point to a pointer to the GC allocation record to free. It will
 # be updated to point to the next allocation.
@@ -370,12 +385,13 @@ function gc_free_local_impl(
     next_record = unsafe_load(next_record_ptr)
     unsafe_store!(record_ptr, next_record)
 
-    println("Freeing $(unsafe_load(record).size) bytes at $(data_pointer(record))")
-
     # Add the record to the free list and update its `next` pointer
     # (but not in that order).
     unsafe_store!(next_record_ptr, unsafe_load(free_list_head_ptr))
     unsafe_store!(free_list_head_ptr, record)
+
+    # Zero-fill the newly freed block of memory.
+    zero_fill!(data_pointer(record), unsafe_load(@get_field_pointer(record, :size)))
 end
 
 """
@@ -398,6 +414,14 @@ const initial_gc_heap_size = 16 * (1 << 20)
 # roots that can be stored per thread. Currently set to
 # 256 roots. That's 2 KiB of roots per thread.
 const default_root_buffer_capacity = 256
+
+# The point at which an arena is deemed to be starving, i.e.,
+# it no longer contains enough memory to perform basic allocations.
+# If an arena's free byte count stays below the arena starvation
+# size after a collection phase, the collector will allocate additional
+# memory to the arena such that it is no longer starving.
+# The arena starvation limit is currently set to 4 MiB.
+const arena_starvation_limit = 4 * (1 << 20)
 
 # A description of a region of memory that has been allocated to the GC heap.
 struct GCHeapRegion
@@ -443,13 +467,11 @@ function gc_init!(
 
     # Compute a pointer to the start of the heap.
     heap_start_ptr = rootbuf_ptr + rootbuf_bytesize
-    global_arena_size = Csize_t(gc_memory_end_ptr) - Csize_t(heap_start_ptr) - sizeof(GCAllocationRecord) - sizeof(GCArenaRecord)
 
     # Create a single free list entry.
-    first_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, heap_start_ptr + sizeof(GCArenaRecord))
-    unsafe_store!(
-        first_entry_ptr,
-        GCAllocationRecord(global_arena_size, C_NULL))
+    first_entry_ptr = make_gc_block!(
+        heap_start_ptr + sizeof(GCArenaRecord),
+        Csize_t(gc_memory_end_ptr) - Csize_t(heap_start_ptr) - sizeof(GCArenaRecord))
 
     # Set up the main GC data structure.
     global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, heap_start_ptr)
@@ -458,6 +480,18 @@ function gc_init!(
         GCArenaRecord(0, first_entry_ptr, C_NULL))
 
     return GCMasterRecord(global_arena, root_buffer_capacity, UInt32(thread_count), fingerbuf_ptr, rootbuf_ptr)
+end
+
+# Takes a zero-filled region of memory and turns it into a block
+# managed by the GC, prefixed with an allocation record.
+function make_gc_block!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{GCAllocationRecord} where T
+    entry = Base.unsafe_convert(Ptr{GCAllocationRecord}, start_ptr)
+    unsafe_store!(
+        entry,
+        GCAllocationRecord(
+            Csize_t(start_ptr + size) - Csize_t(data_pointer(entry)),
+            C_NULL))
+    return entry
 end
 
 # Tells if a GC heap contains a particular pointer.
@@ -567,6 +601,56 @@ function sort_allocation_list(master_record::GCMasterRecord)::SortedAllocationLi
     return SortedAllocationList(records)
 end
 
+# Compact a GC arena's free list. This function will
+#   1. merge adjancent free blocks, and
+#   2. reorder free blocks to put small blocks at the front
+#      of the free list,
+#   3. tally the total number of free bytes and return that number.
+function gc_compact_free_list(arena::Ptr{GCArenaRecord})::Csize_t
+    # Let's start by creating a list of all free list records.
+    records = Ptr{GCAllocationRecord}[]
+    free_list_head = unsafe_load(arena).free_list_head
+    iterate_allocation_records(free_list_head) do record
+        push!(records, record)
+    end
+
+    # We now sort those records and loop through the sorted list,
+    # merging free list entries as we go along.
+    sort!(records)
+
+    i = 1
+    while i < length(records)
+        first_record = records[i]
+        second_record = records[i + 1]
+        if data_end_pointer(first_record) == Base.unsafe_convert(Ptr{UInt8}, second_record)
+            # We found two adjacent free list entries. Expand the first
+            # record's size to encompass both entries, zero-fill the second
+            # record's header and delete it from the list of records.
+            new_size = Csize_t(data_end_pointer(second_record)) - Csize_t(data_pointer(first_record))
+            zero_fill!(data_end_pointer(first_record), data_pointer(second_record))
+            unsafe_store!(@get_field_pointer(first_record, :size), new_size)
+            deleteat!(records, i + 1)
+        else
+            i += 1
+        end
+    end
+
+    # Now sort the records based on size. Put the smallest records first to
+    # discourage fragmentation.
+    sort!(records; lt = (x, y) -> unsafe_load(x).size < unsafe_load(y).size)
+
+    # Reconstruct the free list as a linked list.
+    prev_record_ptr = @get_field_pointer(arena, :free_list_head)
+    for record in records
+        unsafe_store!(prev_record_ptr, record)
+        prev_record_ptr = @get_field_pointer(record, :next)
+    end
+    unsafe_store!(prev_record_ptr, C_NULL)
+
+    # Compute the total number of free bytes.
+    return sum(record -> unsafe_load(record).size, records)
+end
+
 # Collects garbage. This function is designed to be called by the host,
 # not by the device.
 function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
@@ -623,7 +707,8 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
 
     # We're done with the mark phase! Time to proceed to the sweep phase.
     # The first thing we'll do is iterate through every arena's allocation list and
-    # free dead blocks.
+    # free dead blocks. Next, we will compact and reorder free lists to combat
+    # fragmentation.
     iterate_arenas(master_record) do arena
         record_ptr = @get_field_pointer(arena, :allocation_list_head)
         while true
@@ -642,6 +727,22 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
                 # next iteration of this loop.
                 gc_free_local_impl(arena, record_ptr)
             end
+        end
+
+        # Compact the free list.
+        free_memory = gc_compact_free_list(arena)
+
+        # If the amount of free memory in the arena is below the starvation
+        # limit then we'll expand the GC heap and add the additional memory
+        # to the arena's free list.
+        if free_memory < arena_starvation_limit
+            region = expand!(heap, arena_starvation_limit)
+            extra_record = make_gc_block!(region.start, region.size)
+            last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
+            iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
+                last_free_list_ptr = @get_field_pointer(record, :next)
+            end
+            unsafe_store!(last_free_list_ptr, extra_record)
         end
     end
 end
