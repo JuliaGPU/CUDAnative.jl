@@ -11,9 +11,9 @@ export @cuda_interruptible, interrupt, interrupt_or_wait, wait_for_interrupt
 
 # Allocates an array of host memory that is page-locked and accessible
 # to the device. Maps the allocation into the CUDA address space.
-# Returns a (host array, device buffer) pair. The former can be used by
-# the host to access the array, the latter can be used by the device.
-function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T) where {T, N}
+# Returns a host array that can be turned into a device array by calling
+# the `get_shared_device_buffer` function.
+function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T)::Array{T, N} where {T, N}
     # Allocate memory that is accessible to both the host and the device.
     bytesize = prod(dims) * sizeof(T)
     ptr_ref = Ref{Ptr{Cvoid}}()
@@ -22,20 +22,29 @@ function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T) where {T, N}
         (Ptr{Ptr{Cvoid}}, Csize_t),
         ptr_ref, bytesize)
 
-    device_buffer = CUDAdrv.Mem.Buffer(convert(CuPtr{T}, convert(Csize_t, ptr_ref[])), bytesize, CuCurrentContext())
-
-    # Wrap the memory in an array for the host.
+    # Wrap the memory in an array.
     host_array = Base.unsafe_wrap(Array{T, N}, Ptr{T}(ptr_ref[]), dims; own = false)
 
     # Initialize the array's contents.
     fill!(host_array, init)
 
-    return host_array, device_buffer
+    return host_array
+end
+
+# Gets the device array that corresponds to a shared host array.
+# NOTE: this function only works for arrays that were allocated by
+# `alloc_shared_array`. It has undefined behavior for all other arrays.
+function get_shared_device_buffer(shared_array::Array{T, N})::Mem.Buffer where {T, N}
+    bytesize = length(shared_array) * sizeof(T)
+    CUDAdrv.Mem.Buffer(
+        convert(CuPtr{T}, convert(Csize_t, pointer(shared_array, 1))),
+        bytesize,
+        CuCurrentContext())
 end
 
 # Frees an array of host memory.
-function free_shared_array(buffer::Mem.Buffer)
-    ptr = convert(Ptr{Cvoid}, convert(Csize_t, buffer.ptr))
+function free_shared_array(shared_array::Array{T, N}) where {T, N}
+    ptr = pointer(shared_array, 1)
     @apicall(
         :cuMemFreeHost,
         (Ptr{Cvoid},),
@@ -233,7 +242,8 @@ macro cuda_interruptible(handler, ex...)
         quote
             GC.@preserve $(vars...) begin
                 # Define a trivial buffer that contains the interrupt state.
-                local host_array, device_buffer = alloc_shared_array((1,), ready)
+                local host_array = alloc_shared_array((1,), ready)
+                local device_buffer = get_shared_device_buffer(host_array)
 
                 try
                     # Define a kernel initialization function that sets the
@@ -261,7 +271,7 @@ macro cuda_interruptible(handler, ex...)
                     # Handle interrupts.
                     handle_interrupts($(esc(handler)), pointer(host_array, 1), $(esc(stream)))
                 finally
-                    free_shared_array(device_buffer)
+                    free_shared_array(host_array)
                 end
             end
          end)

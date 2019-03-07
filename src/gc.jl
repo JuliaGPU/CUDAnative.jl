@@ -355,10 +355,36 @@ const initial_gc_heap_size = 16 * (1 << 20)
 # 256 roots. That's 2 KiB of roots per thread.
 const default_root_buffer_capacity = 256
 
-# Initializes GC memory and produces a master record.
-function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_capacity::Integer = default_root_buffer_capacity)::GCMasterRecord
-    gc_memory_start_ptr = pointer(buffer, 1)
-    gc_memory_end_ptr = pointer(buffer, length(buffer))
+# A description of a region of memory that has been allocated to the GC heap.
+struct GCHeapRegion
+    # A buffer that contains the GC region's bytes.
+    buffer::Array{UInt8, 1}
+    # A pointer to the first element in the region.
+    start::Ptr{UInt8}
+    # The region's size in bytes.
+    size::Csize_t
+end
+
+GCHeapRegion(buffer::Array{UInt8, 1}) = GCHeapRegion(buffer, pointer(buffer, 1), Csize_t(length(buffer)))
+
+# A description of all memory that has been allocated to the GC heap.
+struct GCHeapDescription
+    # A list of the set of regions that comprise the GC heap.
+    regions::Array{GCHeapRegion, 1}
+end
+
+GCHeapDescription() = GCHeapDescription([])
+
+# Initializes a GC heap and produces a master record.
+function gc_init!(
+    heap::GCHeapDescription,
+    thread_count::Integer;
+    root_buffer_capacity::Integer = default_root_buffer_capacity)::GCMasterRecord
+
+    master_region = heap.regions[1]
+
+    gc_memory_start_ptr = master_region.start
+    gc_memory_end_ptr = master_region.start + master_region.size
 
     # Set up root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
@@ -390,9 +416,58 @@ function gc_init(buffer::Array{UInt8, 1}, thread_count::Integer; root_buffer_cap
     return GCMasterRecord(global_arena, root_buffer_capacity, fingerbuf_ptr, rootbuf_ptr)
 end
 
+# Tells if a GC heap contains a particular pointer.
+function contains(heap::GCHeapDescription, pointer::Ptr{T}) where T
+    for region in heap.regions
+        if pointer >= region.start && pointer < region.start + region.size
+            return true
+        end
+    end
+    return false
+end
+
+# Expands the GC heap by allocating a region of memory and adding it to
+# the list of allocated regions. `size` describes the amount of bytes to
+# allocate. Returns the allocated region.
+function expand!(heap::GCHeapDescription, size::Integer)::GCHeapRegion
+    buffer = alloc_shared_array((size,), UInt8(0))
+    region = GCHeapRegion(buffer)
+    push!(heap.regions, region)
+    return region
+end
+
+# Frees all memory allocated by a GC heap.
+function free!(heap::GCHeapDescription)
+    for region in heap.regions
+        free_shared_array(region.buffer)
+    end
+end
+
 # Collects garbage. This function is designed to be called by
 # the host, not by the device.
-function gc_collect_impl(master_record::GCMasterRecord)
+function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
+
+    # The Julia CPU GC is precise and the information it uses for precise
+    # garbage collection is stored in memory that we should be able to access.
+    # However, the way the CPU GC stores field information is incredibly
+    # complicated and replicating that logic here would be a royal pain to
+    # implement and maintain. Ideally, the CPU GC would expose an interface that
+    # allows us to point to an object and ask the GC for all GC-tracked pointers
+    # it contains. Alas, no such luck: the CPU GC doesn't even have an internal
+    # function that does that. The CPU GC's logic for finding GC-tracked pointer
+    # fields is instead fused tightly with its 'mark' loop.
+    #
+    # To cope with this, we will simply implement a conservative GC: we precisely
+    # scan the roots for pointers into the GC heap. We then recursively mark blocks
+    # that are pointed to by such pointers as live and conservatively scan them for
+    # more pointers.
+    #
+    # A conservative GC is fairly simple: we maintain a worklist of pointers that
+    # are live and may need to be processed, as well as a set of pointers that are
+    # live and have already been processed.
+    live_pointers = Set{ObjectRef}()
+    live_worklist = []
+
     println("GC collections are not implemented yet.")
 end
 
@@ -453,12 +528,14 @@ macro cuda_gc(ex...)
         quote
             GC.@preserve $(vars...) begin
                 # Define a trivial buffer that contains the interrupt state.
-                local host_interrupt_array, device_interrupt_buffer = alloc_shared_array((1,), ready)
+                local host_interrupt_array = alloc_shared_array((1,), ready)
+                local device_interrupt_buffer = get_shared_device_buffer(host_interrupt_array)
 
                 # Allocate a shared buffer for GC memory.
                 local gc_memory_size = initial_gc_heap_size + sizeof(ObjectRef) * default_root_buffer_capacity * $(esc(thread_count))
-                local host_gc_array, device_gc_buffer = alloc_shared_array((gc_memory_size,), UInt8(0))
-                local master_record = gc_init(host_gc_array, $(esc(thread_count)))
+                local gc_heap = GCHeapDescription()
+                expand!(gc_heap, gc_memory_size)
+                local master_record = gc_init!(gc_heap, $(esc(thread_count)))
 
                 # Define a kernel initialization function.
                 local function kernel_init(kernel)
@@ -488,7 +565,7 @@ macro cuda_gc(ex...)
                 end
 
                 local function handle_interrupt()
-                    gc_collect_impl(master_record)
+                    gc_collect_impl(master_record, gc_heap)
                 end
 
                 try
@@ -502,8 +579,8 @@ macro cuda_gc(ex...)
                     # Handle interrupts.
                     handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
                 finally
-                    free_shared_array(device_interrupt_buffer)
-                    free_shared_array(device_gc_buffer)
+                    free_shared_array(host_interrupt_array)
+                    free!(gc_heap)
                 end
             end
          end)
