@@ -26,6 +26,8 @@
 
 export @cuda_gc, gc_malloc, gc_collect
 
+import Base: length
+
 # A data structure that precedes every chunk of memory that has been
 # allocated or put into the free list.
 struct GCAllocationRecord
@@ -38,6 +40,11 @@ struct GCAllocationRecord
     # points to the next free list entry; otherwise, it points to the
     # next entry in the list of allocated blocks.
     next::Ptr{GCAllocationRecord}
+end
+
+# Gets a pointer to the first byte of data managed by an allocation record.
+function data_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
+    Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(GCAllocationRecord)
 end
 
 @generated function get_field_pointer_impl(base_pointer::Ptr{TBase}, ::Val{field_name}) where {TBase, field_name}
@@ -83,6 +90,9 @@ struct GCMasterRecord
     # of roots per thread.
     root_buffer_capacity::UInt32
 
+    # The number of threads.
+    thread_count::UInt32
+
     # A pointer to a list of root buffer pointers that point to the
     # end of the root buffer for every thread.
     root_buffer_fingers::Ptr{Ptr{ObjectRef}}
@@ -90,6 +100,11 @@ struct GCMasterRecord
     # A pointer to a list of buffers that can be used to store GC roots in.
     # These root buffers are partitioned into GC frames later on.
     root_buffers::Ptr{ObjectRef}
+end
+
+# Iterates through all arena pointers stored in a GC master record.
+@inline function iterate_arenas(fun::Function, master_record::GCMasterRecord)
+    fun(master_record.global_arena)
 end
 
 # Gets the global GC interrupt lock.
@@ -195,7 +210,7 @@ function gc_use_free_list_entry(
     # to create a new entry from any unused memory in the entry.
 
     # Compute the address to return.
-    data_address = Base.unsafe_convert(Ptr{UInt8}, entry) + sizeof(GCAllocationRecord)
+    data_address = data_pointer(entry)
 
     # Compute the end of the free memory chunk.
     end_address = data_address + entry_data.size
@@ -207,11 +222,12 @@ function gc_use_free_list_entry(
     new_entry_address = new_data_address - sizeof(GCAllocationRecord)
     if new_entry_address < data_address + bytesize
         new_entry_address += gc_align
+        new_data_address += gc_align
     end
 
     # If we can place a new entry just past the allocation, then we should
     # by all means do so.
-    if new_entry_address + sizeof(GCAllocationRecord) < end_address
+    if new_data_address < end_address
         # Create a new free list entry.
         new_entry_size = Csize_t(end_address) - Csize_t(new_data_address)
         new_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, new_entry_address)
@@ -329,9 +345,37 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     end
 
     # Alright, so that was a spectacular failure. Let's just throw an exception.
-    @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", bytesize)
+    @cuprintf("ERROR: Out of GPU GC memory (trying to allocate %i bytes)\n", bytesize)
     # throw(OutOfMemoryError())
     return C_NULL
+end
+
+# Tries to free a block of memory from a particular arena. `record_ptr`
+# must point to a pointer to the GC allocation record to free. It will
+# be updated to point to the next allocation.
+#
+# This function is designed to be called by the host: it does not
+# turn off collections. It can be called by the device, but in that
+# case it should be prefixed by the `@nocollect` macro followed by
+# a write lock acquisition on the arena's lock.
+function gc_free_local_impl(
+    arena::Ptr{GCArenaRecord},
+    record_ptr::Ptr{Ptr{GCAllocationRecord}})
+
+    record = unsafe_load(record_ptr)
+    next_record_ptr = @get_field_pointer(record, :next)
+    free_list_head_ptr = @get_field_pointer(arena, :free_list_head)
+
+    # Remove the record from the allocation list.
+    next_record = unsafe_load(next_record_ptr)
+    unsafe_store!(record_ptr, next_record)
+
+    println("Freeing $(unsafe_load(record).size) bytes at $(data_pointer(record))")
+
+    # Add the record to the free list and update its `next` pointer
+    # (but not in that order).
+    unsafe_store!(next_record_ptr, unsafe_load(free_list_head_ptr))
+    unsafe_store!(free_list_head_ptr, record)
 end
 
 """
@@ -394,7 +438,7 @@ function gc_init!(
 
     # Populate the root buffer fingers.
     for i in 1:thread_count
-        unsafe_store!(fingerbuf_ptr, rootbuf_ptr + i * sizeof(ObjectRef) * root_buffer_capacity, i)
+        unsafe_store!(fingerbuf_ptr, rootbuf_ptr + (i - 1) * sizeof(ObjectRef) * root_buffer_capacity, i)
     end
 
     # Compute a pointer to the start of the heap.
@@ -413,7 +457,7 @@ function gc_init!(
         global_arena,
         GCArenaRecord(0, first_entry_ptr, C_NULL))
 
-    return GCMasterRecord(global_arena, root_buffer_capacity, fingerbuf_ptr, rootbuf_ptr)
+    return GCMasterRecord(global_arena, root_buffer_capacity, UInt32(thread_count), fingerbuf_ptr, rootbuf_ptr)
 end
 
 # Tells if a GC heap contains a particular pointer.
@@ -443,10 +487,89 @@ function free!(heap::GCHeapDescription)
     end
 end
 
-# Collects garbage. This function is designed to be called by
-# the host, not by the device.
-function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
+# A sorted list of all allocation records for allocated blocks.
+# This data structure is primarily useful for rapidly mapping
+# pointers to the blocks allocated blocks that contain them.
+struct SortedAllocationList
+    # An array of pointers to allocation records. The pointers
+    # are all sorted.
+    records::Array{Ptr{GCAllocationRecord}, 1}
+end
 
+length(alloc_list::SortedAllocationList) = length(alloc_list.records)
+
+# Gets a pointer to the allocation record that manages the memory
+# pointed to by `pointer`. Returns a null pointer if there is no
+# such record.
+function get_record(
+    alloc_list::SortedAllocationList,
+    pointer::Ptr{T})::Ptr{GCAllocationRecord} where T
+
+    cast_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, pointer)
+
+    # Deal with the most common cases quickly.
+    if length(alloc_list) == 0 ||
+        pointer < data_pointer(alloc_list.records[1]) ||
+        pointer > data_pointer(alloc_list.records[end]) + Base.unsafe_load(alloc_list.records[end]).size
+
+        return C_NULL
+    end
+
+    # To do this lookup quickly, we will do a binary search for the
+    # biggest allocation record pointer that is smaller than `pointer`.
+    range_start, range_end = 1, length(alloc_list)
+    while range_end - range_start > 1 
+        range_mid = div(range_start + range_end, 2)
+        mid_val = alloc_list.records[range_mid]
+        if mid_val > cast_ptr
+            range_end = range_mid
+        else
+            range_start = range_mid
+        end
+    end
+
+    record = alloc_list.records[range_end]
+    if record >= cast_ptr
+        record = alloc_list.records[range_start]
+    end
+
+    # Make sure that the pointer actually points to a region of memory
+    # that is managed by the candidate record we found.
+    record_data_pointer = data_pointer(record)
+    if cast_ptr >= record_data_pointer && cast_ptr < record_data_pointer + unsafe_load(record).size
+        return record
+    else
+        return C_NULL
+    end
+end
+
+# Iterates through a linked list of allocation records and apply a function
+# to every node in the linked list. The function is allowed to modify allocation
+# records.
+@inline function iterate_allocation_records(fun::Function, head::Ptr{GCAllocationRecord})
+    while head != C_NULL
+        fun(head)
+        head = unsafe_load(head).next
+    end
+end
+
+# Takes a GC master record and constructs a sorted allocation list
+# based on it.
+function sort_allocation_list(master_record::GCMasterRecord)::SortedAllocationList
+    records = []
+    iterate_arenas(master_record) do arena
+        allocation_list_head = unsafe_load(arena).allocation_list_head
+        iterate_allocation_records(allocation_list_head) do record
+            push!(records, record)
+        end
+    end
+    sort!(records)
+    return SortedAllocationList(records)
+end
+
+# Collects garbage. This function is designed to be called by the host,
+# not by the device.
+function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
     # The Julia CPU GC is precise and the information it uses for precise
     # garbage collection is stored in memory that we should be able to access.
     # However, the way the CPU GC stores field information is incredibly
@@ -457,18 +580,70 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
     # function that does that. The CPU GC's logic for finding GC-tracked pointer
     # fields is instead fused tightly with its 'mark' loop.
     #
-    # To cope with this, we will simply implement a conservative GC: we precisely
+    # To cope with this, we will simply implement a semi-conservative GC: we precisely
     # scan the roots for pointers into the GC heap. We then recursively mark blocks
     # that are pointed to by such pointers as live and conservatively scan them for
     # more pointers.
     #
-    # A conservative GC is fairly simple: we maintain a worklist of pointers that
-    # are live and may need to be processed, as well as a set of pointers that are
+    # Our mark phase is fairly simple: we maintain a worklist of pointers that
+    # are live and may need to be processed, as well as a set of blocks that are
     # live and have already been processed.
-    live_pointers = Set{ObjectRef}()
-    live_worklist = []
+    live_blocks = Set{Ptr{GCAllocationRecord}}()
+    live_worklist = Ptr{ObjectRef}[]
 
-    println("GC collections are not implemented yet.")
+    # Get a sorted allocation list, which will allow us to classify live pointers quickly.
+    alloc_list = sort_allocation_list(master_record)
+
+    # Add all roots to the worklist.
+    for i in 1:(master_record.root_buffer_capacity * master_record.thread_count)
+        root = unsafe_load(master_record.root_buffers, i)
+        if root != C_NULL
+            push!(live_worklist, root)
+        end
+    end
+
+    # Now process all live pointers until we reach a fixpoint.
+    while !isempty(live_worklist)
+        # Pop a pointer from the worklist.
+        object_ref = pop!(live_worklist)
+        # Get the block for that pointer.
+        record = get_record(alloc_list, object_ref)
+        # Make sure that we haven't visited the block yet.
+        if record != C_NULL && !(record in live_blocks)
+            # Mark the block as live.
+            push!(live_blocks, record)
+            # Add all pointer-sized, aligned values to the live pointer worklist.
+            block_pointer = data_pointer(record)
+            block_size = unsafe_load(record).size
+            for i in 0:sizeof(ObjectRef):(block_size - 1)
+                push!(live_worklist, Base.unsafe_convert(ObjectRef, block_pointer + i))
+            end
+        end
+    end
+
+    # We're done with the mark phase! Time to proceed to the sweep phase.
+    # The first thing we'll do is iterate through every arena's allocation list and
+    # free dead blocks.
+    iterate_arenas(master_record) do arena
+        record_ptr = @get_field_pointer(arena, :allocation_list_head)
+        while true
+            record = unsafe_load(record_ptr)
+            if record == C_NULL
+                # We've reached the end of the list.
+                break
+            end
+
+            if record in live_blocks
+                # We found a live block. Proceed to the next block.
+                record_ptr = @get_field_pointer(record, :next)
+            else
+                # We found a dead block. Release it. Don't proceed to the
+                # next block because the current block will change in the
+                # next iteration of this loop.
+                gc_free_local_impl(arena, record_ptr)
+            end
+        end
+    end
 end
 
 # Examines a keyword argument list and gets either the value
