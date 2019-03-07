@@ -13,8 +13,7 @@ using ..CUDAnative
 using LLVM
 using LLVM.Interop
 
-import ..CUDAnative: @nocollect, ObjectRef, GCFrame, get_gc_master_record, get_thread_id, new_gc_frame_impl
-
+import ..CUDAnative: GCFrame
 ## representation of a runtime method instance
 
 struct RuntimeMethodInstance
@@ -245,58 +244,18 @@ end
 
 compile(gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
 
-"""
-    new_gc_frame(size::UInt32)::GCFrame
-
-Allocates a new GC frame.
-"""
-function new_gc_frame(size::UInt32)::GCFrame
-    new_gc_frame_impl(size)
-end
-
-compile(new_gc_frame, Any, (Cuint,), T_pprjlvalue)
-
-"""
-    push_gc_frame(gc_frame::GCFrame, size::UInt32)
-
-Registers a GC frame with the garbage collector.
-"""
-function push_gc_frame(gc_frame::GCFrame, size::UInt32)
-    master_record = get_gc_master_record()
-
-    # Update the root buffer tip.
-    unsafe_store!(
-        master_record.root_buffer_fingers,
-        gc_frame + size * sizeof(ObjectRef),
-        get_thread_id())
-    return
-end
+# Include GC frame management functions into the runtime.
+compile(CUDAnative.new_gc_frame, Any, (Cuint,), T_pprjlvalue)
 
 compile(
-    push_gc_frame,
+    CUDAnative.push_gc_frame,
     Nothing,
     (GCFrame, Cuint),
     () -> convert(LLVMType, Cvoid),
     () -> [T_pprjlvalue(), convert(LLVMType, UInt32)])
 
-"""
-    pop_gc_frame(gc_frame::GCFrame)
-
-Deregisters a GC frame.
-"""
-function pop_gc_frame(gc_frame::GCFrame)
-    master_record = get_gc_master_record()
-
-    # Update the root buffer tip.
-    unsafe_store!(
-        master_record.root_buffer_fingers,
-        gc_frame,
-        get_thread_id())
-    return
-end
-
 compile(
-    pop_gc_frame,
+    CUDAnative.pop_gc_frame,
     Nothing,
     (GCFrame,),
     () -> convert(LLVMType, Cvoid),

@@ -121,11 +121,47 @@ end
     return threadIdx().x
 end
 
-# Same as 'new_gc_frame', but does not disable collections.
-function new_gc_frame_impl(size::UInt32)::GCFrame
+"""
+    new_gc_frame(size::UInt32)::GCFrame
+
+Allocates a new GC frame.
+"""
+function new_gc_frame(size::UInt32)::GCFrame
     master_record = get_gc_master_record()
     # Return the root buffer tip: that's where the new GC frame starts.
     return unsafe_load(master_record.root_buffer_fingers, get_thread_id())
+end
+
+"""
+    push_gc_frame(gc_frame::GCFrame, size::UInt32)
+
+Registers a GC frame with the garbage collector.
+"""
+function push_gc_frame(gc_frame::GCFrame, size::UInt32)
+    master_record = get_gc_master_record()
+
+    # Update the root buffer tip.
+    unsafe_store!(
+        master_record.root_buffer_fingers,
+        gc_frame + size * sizeof(ObjectRef),
+        get_thread_id())
+    return
+end
+
+"""
+    pop_gc_frame(gc_frame::GCFrame)
+
+Deregisters a GC frame.
+"""
+function pop_gc_frame(gc_frame::GCFrame)
+    master_record = get_gc_master_record()
+
+    # Update the root buffer tip.
+    unsafe_store!(
+        master_record.root_buffer_fingers,
+        gc_frame,
+        get_thread_id())
+    return
 end
 
 const gc_align = Csize_t(16)
@@ -261,7 +297,7 @@ function gc_malloc_local(arena::Ptr{GCArenaRecord}, bytesize::Csize_t)::Ptr{UInt
         # won't get collected by the GC before the caller has a chance to add it to its
         # own GC frame.
         if result_ptr != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
-            gc_frame = new_gc_frame_impl(UInt32(1))
+            gc_frame = new_gc_frame(UInt32(1))
             unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, result_ptr))
         end
         return result_ptr
