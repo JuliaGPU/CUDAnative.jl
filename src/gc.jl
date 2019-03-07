@@ -126,7 +126,7 @@ end
 
 Allocates a new GC frame.
 """
-function new_gc_frame(size::UInt32)::GCFrame
+@inline function new_gc_frame(size::UInt32)::GCFrame
     master_record = get_gc_master_record()
     # Return the root buffer tip: that's where the new GC frame starts.
     return unsafe_load(master_record.root_buffer_fingers, get_thread_id())
@@ -137,7 +137,7 @@ end
 
 Registers a GC frame with the garbage collector.
 """
-function push_gc_frame(gc_frame::GCFrame, size::UInt32)
+@inline function push_gc_frame(gc_frame::GCFrame, size::UInt32)
     master_record = get_gc_master_record()
 
     # Update the root buffer tip.
@@ -153,7 +153,7 @@ end
 
 Deregisters a GC frame.
 """
-function pop_gc_frame(gc_frame::GCFrame)
+@inline function pop_gc_frame(gc_frame::GCFrame)
     master_record = get_gc_master_record()
 
     # Update the root buffer tip.
