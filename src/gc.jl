@@ -341,12 +341,25 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
         return ptr
     end
 
-    # We're out of memory. Ask the host to step in.
+    # We're out of memory, which means that we need the garbage collector
+    # to step in. Acquire the interrupt lock.
     ptr = writer_locked(get_interrupt_lock()) do
-        gc_collect_impl()
+        # Try to allocate memory again. This is bound to fail for the
+        # first thread that acquires the interrupt lock, but it is quite
+        # likely to succeed if we are *not* in the first thread that
+        # acquired the garbage collector lock.
+        ptr2 = gc_malloc_local(master_record.global_arena, bytesize)
 
-        # Try to malloc again.
-        gc_malloc_local(master_record.global_arena, bytesize)
+        if ptr2 == C_NULL
+            # We are either the first thread to acquire the interrupt lock
+            # or the additional memory produced by a previous collection has
+            # already been exhausted. Trigger the garbage collector.
+            gc_collect_impl()
+
+            # Try to malloc again.
+            ptr2 = gc_malloc_local(master_record.global_arena, bytesize)
+        end
+        ptr2
     end
     if ptr != C_NULL
         return ptr
