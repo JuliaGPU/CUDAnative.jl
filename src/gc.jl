@@ -1,9 +1,6 @@
 # This file contains a GC implementation for CUDAnative kernels.
-#
-# CURRENT STATE OF THE GC
-#
-# Simple memory allocation is underway. Memory allocation currently
-# uses a simple free-list.
+# The sections below contain some basic info on how the garbage
+# collector works.
 #
 # MEMORY ALLOCATION
 #
@@ -12,12 +9,18 @@
 # the allocator also maintains a list of all allocated blocks, so
 # the collector knows which blocks it can free.
 #
-# END GOAL
+# GARBAGE COLLECTION
 #
-# The CUDAnative GC is a precise, non-moving, mark-and-sweep GC that runs
-# on the host. The device may trigger the GC via an interrupt.
+# The garbage collector itself is a semi-conservative, non-moving,
+# mark-and-sweep GC that runs on the host. The device may trigger
+# the GC via an interrupt.
 #
-# Some GPU-related GC implementation details:
+# The GC is semi-conservative in the sense that its set of roots
+# is precise but objects are scanned in an imprecise way.
+#
+# MISCELLANEOUS
+#
+# Some miscellaneous GPU-related GC implementation details:
 #
 #   * GC memory is shared by the host and device.
 #   * Every thread gets a fixed region of memory for storing GC roots in.
