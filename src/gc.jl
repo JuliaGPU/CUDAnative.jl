@@ -306,26 +306,24 @@ end
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
 function gc_malloc_local(arena::Ptr{GCArenaRecord}, bytesize::Csize_t)::Ptr{UInt8}
-    # Disable collections and acquire the arena's lock.
-    @nocollect begin
-        arena_lock = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
-        result_ptr = writer_locked(arena_lock) do
-            # Allocate a suitable region of memory.
-            free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
-            allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
-            gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
-        end
-
-        # If the resulting pointer is non-null, then we'll write it to a temporary GC frame.
-        # Our reasoning for doing this is that doing so ensures that the allocated memory
-        # won't get collected by the GC before the caller has a chance to add it to its
-        # own GC frame.
-        if result_ptr != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
-            gc_frame = new_gc_frame(UInt32(1))
-            unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, result_ptr))
-        end
-        return result_ptr
+    # Acquire the arena's lock.
+    arena_lock = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
+    result_ptr = writer_locked(arena_lock) do
+        # Allocate a suitable region of memory.
+        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
     end
+
+    # If the resulting pointer is non-null, then we'll write it to a temporary GC frame.
+    # Our reasoning for doing this is that doing so ensures that the allocated memory
+    # won't get collected by the GC before the caller has a chance to add it to its
+    # own GC frame.
+    if result_ptr != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
+        gc_frame = new_gc_frame(UInt32(1))
+        unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, result_ptr))
+    end
+    return result_ptr
 end
 
 """
@@ -338,16 +336,18 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     master_record = get_gc_master_record()
 
     # Try to malloc the object without host intervention.
-    ptr = gc_malloc_local(master_record.global_arena, bytesize)
+    ptr = @nocollect gc_malloc_local(master_record.global_arena, bytesize)
     if ptr != C_NULL
         return ptr
     end
 
     # We're out of memory. Ask the host to step in.
-    gc_collect()
+    ptr = writer_locked(get_interrupt_lock()) do
+        gc_collect_impl()
 
-    # Try to malloc again.
-    ptr = gc_malloc_local(master_record.global_arena, bytesize)
+        # Try to malloc again.
+        gc_malloc_local(master_record.global_arena, bytesize)
+    end
     if ptr != C_NULL
         return ptr
     end
@@ -397,6 +397,12 @@ function gc_free_local_impl(
     zero_fill!(data_pointer(record), unsafe_load(@get_field_pointer(record, :size)))
 end
 
+# Like 'gc_collect', but does not acquire the interrupt lock.
+function gc_collect_impl()
+    interrupt_or_wait()
+    threadfence_system()
+end
+
 """
     gc_collect()
 
@@ -404,10 +410,7 @@ Triggers a garbage collection phase. This function is designed
 to be called by the device rather than by the host.
 """
 function gc_collect()
-    writer_locked(get_interrupt_lock()) do
-        interrupt_or_wait()
-        threadfence_system()
-    end
+    writer_locked(gc_collect_impl, get_interrupt_lock())
 end
 
 # The initial size of the GC heap, currently 16 MiB.
