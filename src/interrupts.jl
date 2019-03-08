@@ -142,14 +142,27 @@ function interrupt_or_wait()::Bool
 end
 
 """
+    wait_for_interrupt(fun::Function)
+
+Waits for the current interrupt to finish, if an interrupt is
+currently running. A function is repeatedly executed until the
+interrupt finishes.
+"""
+function wait_for_interrupt(fun::Function)
+    state_ptr = get_interrupt_pointer()
+    while volatile_load(state_ptr) == processing
+        fun()
+    end
+end
+
+"""
     wait_for_interrupt()
 
 Waits for the current interrupt to finish, if an interrupt is
 currently running.
 """
 function wait_for_interrupt()
-    state_ptr = get_interrupt_pointer()
-    while volatile_load(state_ptr) == processing
+    wait_for_interrupt() do
     end
 end
 

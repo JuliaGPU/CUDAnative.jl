@@ -43,7 +43,7 @@
 #   * When the device runs out of GC memory, it requests an interrupt
 #     to mark and sweep.
 
-export @cuda_gc, gc_malloc, gc_collect
+export @cuda_gc, gc_malloc, gc_collect, gc_safepoint
 
 import Base: length
 
@@ -103,6 +103,9 @@ const ObjectRef = Ptr{Nothing}
 # A GC frame is just a pointer to an array of Julia objects.
 const GCFrame = Ptr{ObjectRef}
 
+# The type of a safepoint flag.
+const SafepointFlag = UInt32
+
 # A data structure that contains global GC info. This data
 # structure is designed to be immutable: it should not be changed
 # once the host has set it up.
@@ -122,7 +125,7 @@ struct GCMasterRecord
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
-    safepoint_flags::Ptr{UInt8}
+    safepoint_flags::Ptr{SafepointFlag}
 
     # A pointer to a list of root buffer pointers that point to the
     # end of the root buffer for every thread.
@@ -207,6 +210,23 @@ Deregisters a GC frame.
         master_record.root_buffer_fingers,
         gc_frame,
         get_thread_id())
+    return
+end
+
+"""
+    gc_safepoint()
+
+Signals that this warp has reached a GC safepoint.
+"""
+@inline function gc_safepoint()
+    master_record = get_gc_master_record()
+    warp_id = div(get_thread_id() - 1, master_record.warp_count) + 1
+    safepoint_flag_ptr = master_record.safepoint_flags + sizeof(SafepointFlag) * warp_id
+
+    wait_for_interrupt() do
+        volatile_store!(safepoint_flag_ptr, SafepointFlag(1))
+    end
+
     return
 end
 
@@ -502,8 +522,8 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Set up the safepoint flag buffer.
-    safepoint_bytesize = sizeof(UInt8) * warp_count
-    safepoint_ptr = Base.unsafe_convert(Ptr{UInt8}, gc_memory_start_ptr)
+    safepoint_bytesize = sizeof(SafepointFlag) * warp_count
+    safepoint_ptr = Base.unsafe_convert(Ptr{SafepointFlag}, gc_memory_start_ptr)
 
     # Set up root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
