@@ -104,7 +104,18 @@ const ObjectRef = Ptr{Nothing}
 const GCFrame = Ptr{ObjectRef}
 
 # The type of a safepoint flag.
-const SafepointFlag = UInt32
+@enum SafepointFlag::UInt32 begin
+    # Indicates that a warp is not in a safepoint.
+    not_in_safepoint = 0
+    # Indicates that a warp is in a safepoint. This
+    # flag will be reset to `not_in_safepoint` by the
+    # collector on the next collecotr.
+    in_safepoint = 1
+    # Indicates that a warp is in a perma-safepoint:
+    # the collector will not try to set this type
+    # of safepoint back to `not_in_safepoint`.
+    in_perma_safepoint = 2
+end
 
 # A data structure that contains global GC info. This data
 # structure is designed to be immutable: it should not be changed
@@ -224,7 +235,7 @@ Signals that this warp has reached a GC safepoint.
     safepoint_flag_ptr = master_record.safepoint_flags + sizeof(SafepointFlag) * warp_id
 
     wait_for_interrupt() do
-        volatile_store!(safepoint_flag_ptr, SafepointFlag(1))
+        volatile_store!(safepoint_flag_ptr, in_safepoint)
     end
 
     return
