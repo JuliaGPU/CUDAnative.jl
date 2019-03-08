@@ -12,8 +12,8 @@
 # GARBAGE COLLECTION
 #
 # The garbage collector itself is a semi-conservative, non-moving,
-# mark-and-sweep GC that runs on the host. The device may trigger
-# the GC via an interrupt.
+# mark-and-sweep, stop-the-world GC that runs on the host.
+# The device may trigger the GC via an interrupt.
 #
 # The GC is semi-conservative in the sense that its set of roots
 # is precise but objects are scanned in an imprecise way.
@@ -26,6 +26,13 @@
 # its total amount of free bytes has dropped below some threshold,
 # then a fresh chunk of GC-managed memory is allocated and added to
 # the free list.
+#
+# SAFEPOINTS
+#
+# Every warp gets a flag that tells if that warp is in a safepoint.
+# When a collection is triggered, the collector waits for every warp
+# to reach a safepoint. The warps indicate that they have reached a
+# safepoint by setting the flag.
 #
 # MISCELLANEOUS
 #
@@ -103,12 +110,19 @@ struct GCMasterRecord
     # A pointer to the global GC arena.
     global_arena::Ptr{GCArenaRecord}
 
+    # The number of warps.
+    warp_count::UInt32
+
+    # The number of threads.
+    thread_count::UInt32
+
     # The maximum size of a GC root buffer, i.e., the maximum number
     # of roots per thread.
     root_buffer_capacity::UInt32
 
-    # The number of threads.
-    thread_count::UInt32
+    # A pointer to a list of safepoint flags. Every warp has its
+    # own flag.
+    safepoint_flags::Ptr{UInt8}
 
     # A pointer to a list of root buffer pointers that point to the
     # end of the root buffer for every thread.
@@ -475,16 +489,25 @@ GCHeapDescription() = GCHeapDescription([])
 function gc_init!(
     heap::GCHeapDescription,
     thread_count::Integer;
+    warp_count::Union{Integer, Nothing} = nothing,
     root_buffer_capacity::Integer = default_root_buffer_capacity)::GCMasterRecord
+
+    if warp_count == nothing
+        warp_count = thread_count / CUDAdrv.warpsize(device())
+    end
 
     master_region = heap.regions[1]
 
     gc_memory_start_ptr = master_region.start
     gc_memory_end_ptr = master_region.start + master_region.size
 
+    # Set up the safepoint flag buffer.
+    safepoint_bytesize = sizeof(UInt8) * warp_count
+    safepoint_ptr = Base.unsafe_convert(Ptr{UInt8}, gc_memory_start_ptr)
+
     # Set up root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
-    fingerbuf_ptr = Base.unsafe_convert(Ptr{Ptr{ObjectRef}}, gc_memory_start_ptr)
+    fingerbuf_ptr = Base.unsafe_convert(Ptr{Ptr{ObjectRef}}, safepoint_ptr + fingerbuf_bytesize)
     rootbuf_bytesize = sizeof(ObjectRef) * root_buffer_capacity * thread_count
     rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, fingerbuf_ptr + fingerbuf_bytesize)
 
@@ -507,7 +530,14 @@ function gc_init!(
         global_arena,
         GCArenaRecord(0, first_entry_ptr, C_NULL))
 
-    return GCMasterRecord(global_arena, root_buffer_capacity, UInt32(thread_count), fingerbuf_ptr, rootbuf_ptr)
+    return GCMasterRecord(
+        global_arena,
+        UInt32(warp_count),
+        UInt32(thread_count),
+        root_buffer_capacity,
+        safepoint_ptr,
+        fingerbuf_ptr,
+        rootbuf_ptr)
 end
 
 # Takes a zero-filled region of memory and turns it into a block
