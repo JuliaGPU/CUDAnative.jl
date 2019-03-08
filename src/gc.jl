@@ -18,6 +18,15 @@
 # The GC is semi-conservative in the sense that its set of roots
 # is precise but objects are scanned in an imprecise way.
 #
+# After every garbage collection, the GC will compact free lists:
+# adjacent free list block will be merged and the free list will
+# be sorted based on block sizes to combat memory fragmentation.
+#
+# If a free list is deemed to be "starving" after a collection, i.e.,
+# its total amount of free bytes has dropped below some threshold,
+# then a fresh chunk of GC-managed memory is allocated and added to
+# the free list.
+#
 # MISCELLANEOUS
 #
 # Some miscellaneous GPU-related GC implementation details:
@@ -437,10 +446,10 @@ const default_root_buffer_capacity = 256
 # The point at which an arena is deemed to be starving, i.e.,
 # it no longer contains enough memory to perform basic allocations.
 # If an arena's free byte count stays below the arena starvation
-# size after a collection phase, the collector will allocate additional
-# memory to the arena such that it is no longer starving.
-# The arena starvation limit is currently set to 4 MiB.
-const arena_starvation_limit = 4 * (1 << 20)
+# threshold after a collection phase, the collector will allocate
+# additional memory to the arena such that it is no longer starving.
+# The arena starvation threshold is currently set to 4 MiB.
+const arena_starvation_threshold = 4 * (1 << 20)
 
 # A description of a region of memory that has been allocated to the GC heap.
 struct GCHeapRegion
@@ -754,8 +763,8 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
         # If the amount of free memory in the arena is below the starvation
         # limit then we'll expand the GC heap and add the additional memory
         # to the arena's free list.
-        if free_memory < arena_starvation_limit
-            region = expand!(heap, arena_starvation_limit)
+        if free_memory < arena_starvation_threshold
+            region = expand!(heap, arena_starvation_threshold)
             extra_record = make_gc_block!(region.start, region.size)
             last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
             iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
