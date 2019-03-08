@@ -103,8 +103,8 @@ const ObjectRef = Ptr{Nothing}
 # A GC frame is just a pointer to an array of Julia objects.
 const GCFrame = Ptr{ObjectRef}
 
-# The type of a safepoint flag.
-@enum SafepointFlag::UInt32 begin
+# The states a safepoint flag can have.
+@enum SafepointState::UInt32 begin
     # Indicates that a warp is not in a safepoint.
     not_in_safepoint = 0
     # Indicates that a warp is in a safepoint. This
@@ -136,7 +136,7 @@ struct GCMasterRecord
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
-    safepoint_flags::Ptr{SafepointFlag}
+    safepoint_flags::Ptr{SafepointState}
 
     # A pointer to a list of root buffer pointers that point to the
     # end of the root buffer for every thread.
@@ -179,6 +179,11 @@ end
 # Gets the thread ID of the current thread.
 @inline function get_thread_id()
     return (blockIdx().x - 1) * blockDim().x + threadIdx().x
+end
+
+# Gets the warp ID of the current thread.
+@inline function get_warp_id()
+    return div(get_thread_id() - 1, warpsize()) + 1
 end
 
 """
@@ -229,16 +234,32 @@ end
 
 Signals that this warp has reached a GC safepoint.
 """
-@inline function gc_safepoint()
-    master_record = get_gc_master_record()
-    warp_id = div(get_thread_id() - 1, master_record.warp_count) + 1
-    safepoint_flag_ptr = master_record.safepoint_flags + sizeof(SafepointFlag) * warp_id
-
+function gc_safepoint()
     wait_for_interrupt() do
-        volatile_store!(safepoint_flag_ptr, in_safepoint)
+        gc_set_safepoint_flag(in_safepoint)
     end
-
     return
+end
+
+# Sets this warp's safepoint flag to a particular state.
+function gc_set_safepoint_flag(value::SafepointState)
+    master_record = get_gc_master_record()
+    warp_id = get_warp_id()
+    safepoint_flag_ptr = master_record.safepoint_flags + sizeof(SafepointState) * (warp_id - 1)
+    volatile_store!(safepoint_flag_ptr, value)
+    return
+end
+
+# Marks a region as a perma-safepoint: the entire region
+# is a safepoint. Note that perma-safepoints are not allowed
+# to include non-perma-safepoints.
+macro perma_safepoint(expr)
+    quote
+        gc_set_safepoint_flag(in_perma_safepoint)
+        local result = $(esc(expr))
+        gc_set_safepoint_flag(not_in_safepoint)
+        result
+    end
 end
 
 const gc_align = Csize_t(16)
@@ -390,14 +411,14 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     master_record = get_gc_master_record()
 
     # Try to malloc the object without host intervention.
-    ptr = @nocollect gc_malloc_local(master_record.global_arena, bytesize)
+    ptr = @perma_safepoint @nocollect gc_malloc_local(master_record.global_arena, bytesize)
     if ptr != C_NULL
         return ptr
     end
 
     # We're out of memory, which means that we need the garbage collector
-    # to step in. Acquire the interrupt lock.
-    ptr = writer_locked(get_interrupt_lock()) do
+    # to step in. Set a perma-safepoint and acquire the interrupt lock.
+    ptr = @perma_safepoint writer_locked(get_interrupt_lock()) do
         # Try to allocate memory again. This is bound to fail for the
         # first thread that acquires the interrupt lock, but it is quite
         # likely to succeed if we are *not* in the first thread that
@@ -533,8 +554,8 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Set up the safepoint flag buffer.
-    safepoint_bytesize = sizeof(SafepointFlag) * warp_count
-    safepoint_ptr = Base.unsafe_convert(Ptr{SafepointFlag}, gc_memory_start_ptr)
+    safepoint_bytesize = sizeof(SafepointState) * warp_count
+    safepoint_ptr = Base.unsafe_convert(Ptr{SafepointState}, gc_memory_start_ptr)
 
     # Set up root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
@@ -743,6 +764,25 @@ end
 # Collects garbage. This function is designed to be called by the host,
 # not by the device.
 function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
+    # First off, we have to wait for all warps to reach a safepoint. Clear
+    # safepoint flags and wait for warps to set them again.
+    for i in 0:(master_record.warp_count - 1)
+        atomic_compare_exchange!(
+            master_record.safepoint_flags + i * sizeof(SafepointState),
+            in_safepoint,
+            not_in_safepoint)
+    end
+    safepoint_count = 0
+    while safepoint_count != master_record.warp_count
+        safepoint_count = 0
+        for i in 0:(master_record.warp_count - 1)
+            state = volatile_load(master_record.safepoint_flags + i * sizeof(SafepointState))
+            if state != not_in_safepoint
+                safepoint_count += 1
+            end
+        end
+    end
+
     # The Julia CPU GC is precise and the information it uses for precise
     # garbage collection is stored in memory that we should be able to access.
     # However, the way the CPU GC stores field information is incredibly
