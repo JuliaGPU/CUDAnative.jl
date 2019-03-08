@@ -1,18 +1,30 @@
-using CUDAdrv, CUDAnative
+using CUDAdrv, CUDAnative, LLVM
+using InteractiveUtils
 using Test
+
+mutable struct TempStruct
+    data::Float32
+end
+
+@noinline function escape(val)
+    Base.pointer_from_objref(val)
+end
 
 # Define a kernel that copies values using a temporary buffer.
 function kernel(a::CUDAnative.DevicePtr{Float32}, b::CUDAnative.DevicePtr{Float32})
     i = (blockIdx().x-1) * blockDim().x + threadIdx().x
-    buffer = Base.unsafe_convert(Ptr{Float32}, gc_malloc(sizeof(Float32) * Csize_t(16)))
 
-    unsafe_store!(buffer, unsafe_load(a, i), i % 13)
-    unsafe_store!(b, unsafe_load(buffer, i % 13), i)
+    for j in 1:256
+        # Allocate a mutable struct and make sure it ends up on the GC heap.
+        temp = TempStruct(unsafe_load(a, i))
+        escape(temp)
+        unsafe_store!(b, temp.data, i)
+    end
 
     return
 end
 
-thread_count = 64
+thread_count = 256
 
 # Allocate two arrays.
 source_array = Mem.alloc(Float32, thread_count)
