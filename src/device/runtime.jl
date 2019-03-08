@@ -261,4 +261,7 @@ compile(
     () -> convert(LLVMType, Cvoid),
     () -> [T_pprjlvalue()])
 
+# Also import the safepoint function.
+compile(CUDAnative.gc_safepoint, Cvoid, ())
+
 end

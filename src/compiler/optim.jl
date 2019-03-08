@@ -71,6 +71,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
         initialize!(pm)
         # lower intrinsics
         if ctx.gc
+            add!(pm, FunctionPass("InsertSafepointsGPUGC", insert_safepoints_gpugc!))
             add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
         else
             add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
@@ -584,6 +585,66 @@ function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
     changed |= delete_calls_to!("julia.queue_gc_root", mod)
 
     return changed
+end
+
+# Tells if a function manages a GC frame.
+function has_gc_frame(fun::LLVM.Function)
+    for insn in instructions(entry(fun))
+        if isa(insn, LLVM.CallInst)
+            callee = called_value(insn)
+            if isa(callee, LLVM.Function) && LLVM.name(callee) == "julia.new_gc_frame"
+                return true
+            end
+        end
+    end
+    return false
+end
+
+# Tells if an instruction is a call to a non-intrinsic callee.
+function is_non_intrinsic_call(instruction::LLVM.Instruction)
+    if isa(instruction, LLVM.CallInst)
+        callee = called_value(instruction)
+        if isa(callee, LLVM.Function)
+            callee_name = LLVM.name(callee)
+            return !startswith(callee_name, "julia.") && !startswith(callee_name, "llvm.")
+        else
+            return true
+        end
+    else
+        return false
+    end
+end
+
+"""
+    insert_safepoints_gpugc!(fun::LLVM.Function)
+
+An LLVM pass that inserts GC safepoints in such a way that threads
+reach a safepoint after a reasonable amount of time.
+"""
+function insert_safepoints_gpugc!(fun::LLVM.Function)
+    # Insert a safepoint before every function call, but only for
+    # functions that manage a GC frame.
+    #
+    # TODO: also insert safepoints on loop back-edges? This is what people
+    # usually do, but it requires nontrivial IR analyses that the LLVM C
+    # API doesn't expose.
+
+    if has_gc_frame(fun)
+        let builder = Builder(JuliaContext())
+            for block in blocks(fun)
+                for instruction in instructions(block)
+                    if is_non_intrinsic_call(instruction)
+                        # Insert a safepoint just before the call.
+                        position!(builder, instruction)
+                        debuglocation!(builder, instruction)
+                        call!(builder, Runtime.get(:gc_safepoint), LLVM.Value[])
+                    end
+                end
+            end
+            dispose(builder)
+        end
+    end
+    return true
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.
