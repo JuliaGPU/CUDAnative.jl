@@ -1,5 +1,4 @@
-using CUDAdrv, CUDAnative, LLVM
-using InteractiveUtils
+using CUDAdrv, CUDAnative
 using Test
 
 mutable struct TempStruct
