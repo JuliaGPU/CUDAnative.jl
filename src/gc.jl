@@ -121,9 +121,6 @@ end
 # structure is designed to be immutable: it should not be changed
 # once the host has set it up.
 struct GCMasterRecord
-    # A pointer to the global GC arena.
-    global_arena::Ptr{GCArenaRecord}
-
     # The number of warps.
     warp_count::UInt32
 
@@ -133,6 +130,15 @@ struct GCMasterRecord
     # The maximum size of a GC root buffer, i.e., the maximum number
     # of roots per thread.
     root_buffer_capacity::UInt32
+
+    # The number of local arenas.
+    local_arena_count::UInt32
+
+    # A pointer to a list of local GC arena pointers.
+    local_arenas::Ptr{Ptr{GCArenaRecord}}
+
+    # A pointer to the global GC arena.
+    global_arena::Ptr{GCArenaRecord}
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
@@ -149,6 +155,9 @@ end
 
 # Iterates through all arena pointers stored in a GC master record.
 @inline function iterate_arenas(fun::Function, master_record::GCMasterRecord)
+    for i in 1:master_record.local_arena_count
+        fun(unsafe_load(master_record.local_arenas, i))
+    end
     fun(master_record.global_arena)
 end
 
@@ -184,6 +193,19 @@ end
 # Gets the warp ID of the current thread.
 @inline function get_warp_id()
     return div(get_thread_id() - 1, warpsize()) + 1
+end
+
+# Gets a pointer to the local arena for this thread. This
+# pointer may be null if there are no local arenas.
+@inline function get_local_arena()::Ptr{GCArenaRecord}
+    master_record = get_gc_master_record()
+    if master_record.local_arena_count == UInt32(0)
+        return C_NULL
+    else
+        return unsafe_load(
+            master_record.local_arenas,
+            get_warp_id() % master_record.local_arena_count)
+    end
 end
 
 """
@@ -411,7 +433,23 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     master_record = get_gc_master_record()
 
     # Try to malloc the object without host intervention.
-    ptr = @perma_safepoint @nocollect gc_malloc_local(master_record.global_arena, bytesize)
+    ptr = @perma_safepoint @nocollect begin
+        # Try to allocate in the local arena first. If that doesn't
+        # work, we'll move on to the global arena, which is bigger but
+        # is shared by all threads. (We want to minimize contention
+        # on the global arena's lock.)
+        local_arena = get_local_arena()
+        local_ptr = Base.unsafe_convert(Ptr{UInt8}, C_NULL)
+        if local_arena != C_NULL
+            local_ptr = gc_malloc_local(local_arena, bytesize)
+        end
+
+        if local_ptr == C_NULL
+            gc_malloc_local(master_record.global_arena, bytesize)
+        else
+            local_ptr
+        end
+    end
     if ptr != C_NULL
         return ptr
     end
@@ -423,6 +461,10 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
         # first thread that acquires the interrupt lock, but it is quite
         # likely to succeed if we are *not* in the first thread that
         # acquired the garbage collector lock.
+        #
+        # Note: don't try to allocate in the local arena first because
+        # we have already acquired a device-wide lock. Allocating in
+        # the local arena first might waste precious time.
         ptr2 = gc_malloc_local(master_record.global_arena, bytesize)
 
         if ptr2 == C_NULL
@@ -464,7 +506,7 @@ end
 # turn off collections. It can be called by the device, but in that
 # case it should be prefixed by the `@nocollect` macro followed by
 # a write lock acquisition on the arena's lock.
-function gc_free_local_impl(
+function gc_free_local(
     arena::Ptr{GCArenaRecord},
     record_ptr::Ptr{Ptr{GCAllocationRecord}})
 
@@ -501,21 +543,32 @@ function gc_collect()
     writer_locked(gc_collect_impl, get_interrupt_lock())
 end
 
+# One megabyte.
+const MiB = 1 << 20
+
 # The initial size of the GC heap, currently 16 MiB.
-const initial_gc_heap_size = 16 * (1 << 20)
+const initial_gc_heap_size = 16 * MiB
 
 # The default capacity of a root buffer, i.e., the max number of
 # roots that can be stored per thread. Currently set to
 # 256 roots. That's 2 KiB of roots per thread.
 const default_root_buffer_capacity = 256
 
-# The point at which an arena is deemed to be starving, i.e.,
+# The point at which the global arena is deemed to be starving, i.e.,
 # it no longer contains enough memory to perform basic allocations.
-# If an arena's free byte count stays below the arena starvation
+# If the global arena's free byte count stays below the arena starvation
 # threshold after a collection phase, the collector will allocate
 # additional memory to the arena such that it is no longer starving.
 # The arena starvation threshold is currently set to 4 MiB.
-const arena_starvation_threshold = 4 * (1 << 20)
+const global_arena_starvation_threshold = 4 * MiB
+
+# The point at which a local arena is deemed to be starving, i.e.,
+# it no longer contains enough memory to perform basic allocations.
+# If a local arena's free byte count stays below the arena starvation
+# threshold after a collection phase, the collector will allocate
+# additional memory to the arena such that it is no longer starving.
+# The arena starvation threshold is currently set to 1 MiB.
+const local_arena_starvation_threshold = 1 * MiB
 
 # A description of a region of memory that has been allocated to the GC heap.
 struct GCHeapRegion
@@ -542,7 +595,8 @@ function gc_init!(
     heap::GCHeapDescription,
     thread_count::Integer;
     warp_count::Union{Integer, Nothing} = nothing,
-    root_buffer_capacity::Integer = default_root_buffer_capacity)::GCMasterRecord
+    root_buffer_capacity::Integer = default_root_buffer_capacity,
+    local_arena_count::Integer = 8)::GCMasterRecord
 
     if warp_count == nothing
         warp_count = thread_count / CUDAdrv.warpsize(device())
@@ -553,11 +607,15 @@ function gc_init!(
     gc_memory_start_ptr = master_region.start
     gc_memory_end_ptr = master_region.start + master_region.size
 
-    # Set up the safepoint flag buffer.
-    safepoint_bytesize = sizeof(SafepointState) * warp_count
-    safepoint_ptr = Base.unsafe_convert(Ptr{SafepointState}, gc_memory_start_ptr)
+    # Allocate a local arena pointer buffer.
+    local_arenas_bytesize = sizeof(Ptr{GCArenaRecord}) * local_arena_count
+    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{GCArenaRecord}}, gc_memory_start_ptr)
 
-    # Set up root buffers.
+    # Allocate the safepoint flag buffer.
+    safepoint_bytesize = sizeof(SafepointState) * warp_count
+    safepoint_ptr = Base.unsafe_convert(Ptr{SafepointState}, local_arenas_ptr + local_arenas_bytesize)
+
+    # Allocate root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
     fingerbuf_ptr = Base.unsafe_convert(Ptr{Ptr{ObjectRef}}, safepoint_ptr + fingerbuf_bytesize)
     rootbuf_bytesize = sizeof(ObjectRef) * root_buffer_capacity * thread_count
@@ -568,25 +626,26 @@ function gc_init!(
         unsafe_store!(fingerbuf_ptr, rootbuf_ptr + (i - 1) * sizeof(ObjectRef) * root_buffer_capacity, i)
     end
 
-    # Compute a pointer to the start of the heap.
-    heap_start_ptr = rootbuf_ptr + rootbuf_bytesize
+    # Compute a pointer to the start of the first arena.
+    arena_start_ptr = rootbuf_ptr + rootbuf_bytesize
 
-    # Create a single free list entry.
-    first_entry_ptr = make_gc_block!(
-        heap_start_ptr + sizeof(GCArenaRecord),
-        Csize_t(gc_memory_end_ptr) - Csize_t(heap_start_ptr) - sizeof(GCArenaRecord))
+    # Set up local arenas.
+    for i in 1:local_arena_count
+        local_arena = make_gc_arena!(arena_start_ptr, Csize_t(local_arena_starvation_threshold))
+        unsafe_store!(local_arenas_ptr, local_arena, i)
+        arena_start_ptr += local_arena_starvation_threshold
+    end
 
-    # Set up the main GC data structure.
-    global_arena = Base.unsafe_convert(Ptr{GCArenaRecord}, heap_start_ptr)
-    unsafe_store!(
-        global_arena,
-        GCArenaRecord(0, first_entry_ptr, C_NULL))
+    # Set up the global arena.
+    global_arena = make_gc_arena!(arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
-        global_arena,
         UInt32(warp_count),
         UInt32(thread_count),
         root_buffer_capacity,
+        UInt32(local_arena_count),
+        local_arenas_ptr,
+        global_arena,
         safepoint_ptr,
         fingerbuf_ptr,
         rootbuf_ptr)
@@ -602,6 +661,19 @@ function make_gc_block!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{GCAllocationRecor
             Csize_t(start_ptr + size) - Csize_t(data_pointer(entry)),
             C_NULL))
     return entry
+end
+
+# Takes a zero-filled region of memory and turns it into an arena
+# managed by the GC, prefixed with an arena record.
+function make_gc_arena!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{GCArenaRecord} where T
+    # Create a single free list entry.
+    first_entry_ptr = make_gc_block!(start_ptr + sizeof(GCArenaRecord), size - sizeof(GCArenaRecord))
+
+    # Set up the arena record.
+    arena = Base.unsafe_convert(Ptr{GCArenaRecord}, start_ptr)
+    unsafe_store!(
+        arena,
+        GCArenaRecord(0, first_entry_ptr, C_NULL))
 end
 
 # Tells if a GC heap contains a particular pointer.
@@ -854,7 +926,7 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
                 # We found a dead block. Release it. Don't proceed to the
                 # next block because the current block will change in the
                 # next iteration of this loop.
-                gc_free_local_impl(arena, record_ptr)
+                gc_free_local(arena, record_ptr)
             end
         end
 
@@ -864,8 +936,14 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
         # If the amount of free memory in the arena is below the starvation
         # limit then we'll expand the GC heap and add the additional memory
         # to the arena's free list.
-        if free_memory < arena_starvation_threshold
-            region = expand!(heap, arena_starvation_threshold)
+        threshold = if arena == master_record.global_arena
+            global_arena_starvation_threshold
+        else
+            local_arena_starvation_threshold
+        end
+
+        if free_memory < threshold
+            region = expand!(heap, threshold)
             extra_record = make_gc_block!(region.start, region.size)
             last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
             iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
