@@ -11,7 +11,24 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
         add_library_info!(pm, triple(mod))
         add_transform_info!(pm, tm)
         if internalize
-            internalize!(pm, [LLVM.name(entry)])
+            # We want to internalize functions so we can optimize
+            # them, but we don't really want to internalize globals
+            # because doing so may cause multiple copies of the same
+            # globals to appear after linking together modules.
+            #
+            # For example, the runtime library includes GC-related globals.
+            # It is imperative that these globals are shared by all modules,
+            # but if they are internalized before they are linked then
+            # they will actually not be internalized.
+            #
+            # Also, don't internalize the entry point, for obvious reasons.
+            non_internalizable_names = [LLVM.name(entry)]
+            for val in globals(mod)
+                if isa(val, LLVM.GlobalVariable)
+                    push!(non_internalizable_names, LLVM.name(val))
+                end
+            end
+            internalize!(pm, non_internalizable_names)
         end
     end
 
@@ -71,7 +88,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
         initialize!(pm)
         # lower intrinsics
         if ctx.gc
-            add!(pm, FunctionPass("InsertSafepointsGPUGC", insert_safepoints_gpugc!))
+            add!(pm, FunctionPass("InsertSafepointsGPUGC", fun -> insert_safepoints_gpugc!(fun, entry)))
             add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
         else
             add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
@@ -616,12 +633,16 @@ function is_non_intrinsic_call(instruction::LLVM.Instruction)
 end
 
 """
-    insert_safepoints_gpugc!(fun::LLVM.Function)
+    insert_safepoints_gpugc!(fun::LLVM.Function, entry::LLVM.Function)
 
 An LLVM pass that inserts GC safepoints in such a way that threads
 reach a safepoint after a reasonable amount of time.
+
+Moreover, this pass also inserts perma-safepoints after entry point returns.
+Perma-safepoints inform the GC that it doesn't need to wait for a warp to
+reach a safepoint; inserting them stops the GC from deadlocking.
 """
-function insert_safepoints_gpugc!(fun::LLVM.Function)
+function insert_safepoints_gpugc!(fun::LLVM.Function, entry::LLVM.Function)
     # Insert a safepoint before every function call, but only for
     # functions that manage a GC frame.
     #
@@ -642,6 +663,46 @@ function insert_safepoints_gpugc!(fun::LLVM.Function)
                 end
             end
             dispose(builder)
+        end
+    end
+
+    # Insert perma-safepoints if necessary.
+    if fun == entry
+        # Looks like we're going to have to insert perma-safepoints.
+        # We need to keep in mind that perma-safepoints are per-warp,
+        # so we absolutely cannot allow warps to be in a divergent
+        # state when a perma-safepoint is set---all bets are off if
+        # that happens anyway.
+        #
+        # To make sure that we don't end up in that situation,
+        # we will create a dedicated return block and replace all 'ret'
+        # instructions by jumps to that return block.
+
+        # Create the dedicated return block.
+        return_block = BasicBlock(fun, "kernel_exit")
+        let builder = Builder(JuliaContext())
+            position!(builder, return_block)
+            call!(builder, Runtime.get(:gc_perma_safepoint), LLVM.Value[])
+            ret!(builder)
+            dispose(builder)
+        end
+
+        # Rewrite return instructions as branches to the return bloc.
+        for block in blocks(fun)
+            if block == return_block
+                # We need to be careful not to trick ourselves into
+                # turning the return block's 'ret' into an infinite loop.
+                continue
+            end
+            term = terminator(block)
+            if isa(term, LLVM.RetInst)
+                unsafe_delete!(block, term)
+                let builder = Builder(JuliaContext())
+                    position!(builder, block)
+                    br!(builder, return_block)
+                    dispose(builder)
+                end
+            end
         end
     end
     return true

@@ -263,6 +263,24 @@ function gc_safepoint()
     return
 end
 
+"""
+    gc_perma_safepoint()
+
+Signals that this warp has reached a GC perma-safepoint:
+the GC doesn't need to wait for this warp to reach a safepoint
+before starting collections. Instead, the GC may assume that
+the warp is already in a safepoint.
+
+Be careful with this function: all bets are off when this
+function is used improperly. For a more controlled (but still
+super dangerous) way to use perma-safepoints, see the
+`@perma_safepoint` macro.
+"""
+function gc_perma_safepoint()
+    gc_set_safepoint_flag(in_perma_safepoint)
+    return
+end
+
 # Sets this warp's safepoint flag to a particular state.
 function gc_set_safepoint_flag(value::SafepointState)
     master_record = get_gc_master_record()
@@ -277,7 +295,7 @@ end
 # to include non-perma-safepoints.
 macro perma_safepoint(expr)
     quote
-        gc_set_safepoint_flag(in_perma_safepoint)
+        gc_perma_safepoint()
         local result = $(esc(expr))
         gc_set_safepoint_flag(not_in_safepoint)
         result
@@ -972,9 +990,10 @@ end
 High-level interface for executing code on a GPU with GC support.
 The `@cuda_gc` macro should prefix a call, with `func` a callable function
 or object that should return nothing. It will be compiled to a CUDA function upon first
-use, and to a certain extent arguments will be converted and anaged automatically using
-`cudaconvert`. Finally, a call to `CUDAdrv.cudacall` is performed, scheduling a kernel
-launch on the current CUDA context.
+use, and to a certain extent arguments will be converted and managed automatically using
+`cudaconvert`. Next, a call to `CUDAdrv.cudacall` is performed, scheduling a kernel
+launch on the current CUDA context. Finally, `@cuda_gc` waits for the kernel to finish,
+performing garbage collection in the meantime if necessary.
 
 Several keyword arguments are supported that influence kernel compilation and execution. For
 more information, refer to the documentation of respectively [`cufunction`](@ref) and
