@@ -204,7 +204,7 @@ end
     else
         return unsafe_load(
             master_record.local_arenas,
-            get_warp_id() % master_record.local_arena_count)
+            get_thread_id() % master_record.local_arena_count)
     end
 end
 

@@ -107,28 +107,26 @@ Acquires a reader-writer lock in reader mode, runs `func` while the lock is
 acquired and releases the lock again.
 """
 function reader_locked(func::Function, lock::ReaderWriterLock)
-    warp_serialized() do
-        while true
-            # Increment the reader count. If the lock is in write-acquired mode,
-            # then the lock will stay in that mode (unless the reader count is
-            # exceeded, but that is virtually impossible). Otherwise, the lock
-            # will end up in read-acquired mode.
-            previous_state = atomic_add!(lock.state_ptr, 1)
+    while true
+        # Increment the reader count. If the lock is in write-acquired mode,
+        # then the lock will stay in that mode (unless the reader count is
+        # exceeded, but that is virtually impossible). Otherwise, the lock
+        # will end up in read-acquired mode.
+        previous_state = atomic_add!(lock.state_ptr, 1)
 
-            # If the lock was in the idle or read-acquired state, then
-            # it is now in read-acquired mode.
-            if previous_state >= 0
-                # Run the function.
-                result = func()
-                # Decrement the reader count to release the reader lock.
-                atomic_add!(lock.state_ptr, -1)
-                # We're done here.
-                return result
-            end
-
-            # Decrement the reader count and try again.
+        # If the lock was in the idle or read-acquired state, then
+        # it is now in read-acquired mode.
+        if previous_state >= 0
+            # Run the function.
+            result = func()
+            # Decrement the reader count to release the reader lock.
             atomic_add!(lock.state_ptr, -1)
+            # We're done here.
+            return result
         end
+
+        # Decrement the reader count and try again.
+        atomic_add!(lock.state_ptr, -1)
     end
 end
 
