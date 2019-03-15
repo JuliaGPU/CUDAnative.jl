@@ -1,6 +1,6 @@
 # This file implements threading primitives that work for CUDAnative kernels.
 
-export ReaderWriterLock, reader_locked, writer_locked
+export ReaderWriterLock, reader_locked, writer_locked, Mutex, try_lock, unlock
 
 # Gets a pointer to a global with a particular name. If the global
 # does not exist yet, then it is declared in the global memory address
@@ -17,17 +17,33 @@ export ReaderWriterLock, reader_locked, writer_locked
     :(Core.Intrinsics.llvmcall($ir, $T, Tuple{$(Ptr{T}), $T, $T}, ptr, cmp, new))
 end
 
-# Atomically adds a value to a variable pointed to by a pointer.
-# Returns the previous value stored in that value.
-@generated function atomic_add!(lhs::Ptr{T}, rhs::T)::T where T
+@generated function atomic_rmw!(::Val{op}, lhs::Ptr{T}, rhs::T)::T where {op, T}
     ptr_type = convert(LLVMType, Ptr{T})
     lt = string(convert(LLVMType, T))
     ir = """
         %ptr = inttoptr $ptr_type %0 to $lt*
-        %rv = atomicrmw volatile add $lt* %ptr, $lt %1 seq_cst
+        %rv = atomicrmw volatile $(String(op)) $lt* %ptr, $lt %1 seq_cst
         ret $lt %rv
         """
     :(Core.Intrinsics.llvmcall($ir, $T, Tuple{$(Ptr{T}), $T}, lhs, rhs))
+end
+
+# Atomically adds a value to a variable pointed to by a pointer.
+# Returns the previous value stored in that variable.
+function atomic_add!(lhs::Ptr{T}, rhs::T)::T where T
+    atomic_rmw!(Val(:add), lhs, rhs)
+end
+
+# Atomically computes the logical or of a value and a variable pointed
+# to by a pointer. Returns the previous value stored in that variable.
+function atomic_or!(lhs::Ptr{T}, rhs::T)::T where T
+    atomic_rmw!(Val(:or), lhs, rhs)
+end
+
+# Atomically assigns a new value to a variable pointed to by a pointer.
+# Returns the previous value stored in that variable.
+function atomic_exchange!(lhs::Ptr{T}, rhs::T)::T where T
+    atomic_rmw!(Val(:xchg), lhs, rhs)
 end
 
 # Loads a value from a pointer.
@@ -54,6 +70,10 @@ end
     :(Core.Intrinsics.llvmcall($ir, Cvoid, Tuple{$(Ptr{T}), $T}, ptr, value))
 end
 
+function unwrap_device_ptr(ptr::DevicePtr{T, A})::Ptr{T} where {T, A}
+    convert(Ptr{T}, convert(Csize_t, ptr))
+end
+
 const ReaderWriterLockState = Int64
 
 """
@@ -75,8 +95,8 @@ struct ReaderWriterLock
     state_ptr::Ptr{ReaderWriterLockState}
 end
 
-ReaderWriterLock(state_ptr::DevicePtr{ReaderWriterLockState}) = ReaderWriterLock(
-    convert(Ptr{ReaderWriterLockState}, convert(Csize_t, state_ptr)))
+ReaderWriterLock(state_ptr::DevicePtr{ReaderWriterLockState}) =
+    ReaderWriterLock(unwrap_device_ptr(state_ptr))
 
 const max_rw_lock_readers = (1 << (sizeof(ReaderWriterLockState) * 8 - 1))
 
@@ -153,5 +173,90 @@ function writer_locked(func::Function, lock::ReaderWriterLock)
 
         # We're done here.
         return result
+    end
+end
+
+# Gets the thread ID of the current thread.
+@inline function get_thread_id()
+    return (blockIdx().x - 1) * blockDim().x + threadIdx().x
+end
+
+# Gets the warp ID of the current thread.
+@inline function get_warp_id()
+    return div(get_thread_id() - 1, warpsize()) + 1
+end
+
+const MutexState = UInt32
+
+"""
+A mutex: a lock that guarantees mutual exclusion.
+"""
+struct Mutex
+    # This GPU mutex implementation is based on
+    # Lock-based Synchronization for GPU Architectures
+    # by Yunlong Xu et al.
+    state_ptr::Ptr{MutexState}
+end
+
+Mutex(state_ptr::DevicePtr{MutexState}) = 
+    Mutex(unwrap_device_ptr(state_ptr))
+
+"""
+    unlock(mutex::Mutex)
+
+Unlocks a mutex.
+"""
+function unlock(mutex::Mutex)
+    threadfence()
+    tid = get_thread_id()
+    atomic_compare_exchange!(mutex.state_ptr, UInt32((tid << 1) + 1), UInt32(0))
+    return
+end
+
+"""
+    try_lock(mutex::Mutex)::Bool
+
+Tries to acquire a lock on a mutex. Returns `true`
+if a lock was acquired successfully; otherwise, `false`.
+"""
+function try_lock(mutex::Mutex)::Bool
+    tid = UInt32(get_thread_id())
+    wsize = warpsize()
+    threadbit = UInt32(1) << (tid % wsize)
+
+    mask = vote_ballot(true)
+
+    bitset = @cuStaticSharedMem(UInt32, 128)
+    bitset_ptr = unwrap_device_ptr(pointer(bitset)) + sizeof(UInt32) * div(threadIdx().x - 1, wsize)
+    unsafe_store!(bitset_ptr, UInt32(0))
+
+    lock = atomic_or!(mutex.state_ptr, UInt32(1))
+    if lock & UInt32(1) == UInt32(0)
+        # The lock is free.
+        atomic_exchange!(mutex.state_ptr, UInt32((tid << 1) + 1))
+    else
+        pre_owner = lock >> 1
+        if pre_owner != tid
+            if div(lock, wsize << 1) == div(tid, wsize) && pre_owner > tid && (((mask >> (pre_owner % wsize)) & UInt32(1)) == UInt32(1))
+                atomic_or!(bitset_ptr, UInt32(1 << (pre_owner % wsize)))
+                atomic_exchange!(mutex.state_ptr, UInt32((tid << 1) + 1))
+                if (atomic_or!(mutex.state_ptr, UInt32(0)) >> 1) != tid
+                    # Stealing failed.
+                    atomic_or!(bitset_ptr, threadbit)
+                end
+            else
+                # Cannot steal.
+                atomic_or!(bitset_ptr, threadbit)
+            end
+        end
+    end
+
+    if (unsafe_load(bitset_ptr) & threadbit) == UInt32(0)
+        threadfence()
+        return true
+    else
+        atomic_compare_exchange!(mutex.state_ptr, (tid << 1) + UInt32(1), UInt32(0))
+        threadfence()
+        return false
     end
 end

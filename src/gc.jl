@@ -185,16 +185,6 @@ end
     return unsafe_load(@cuda_global_ptr("gc_master_record", GCMasterRecord))
 end
 
-# Gets the thread ID of the current thread.
-@inline function get_thread_id()
-    return (blockIdx().x - 1) * blockDim().x + threadIdx().x
-end
-
-# Gets the warp ID of the current thread.
-@inline function get_warp_id()
-    return div(get_thread_id() - 1, warpsize()) + 1
-end
-
 # Gets a pointer to the local arena for this thread. This
 # pointer may be null if there are no local arenas.
 @inline function get_local_arena()::Ptr{GCArenaRecord}

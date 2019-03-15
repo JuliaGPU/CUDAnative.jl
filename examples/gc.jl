@@ -9,14 +9,20 @@ end
     Base.pointer_from_objref(val)
 end
 
-# Define a kernel that copies values using a temporary buffer.
+# Define a kernel that copies values using a temporary struct.
 function kernel(a::CUDAnative.DevicePtr{Float32}, b::CUDAnative.DevicePtr{Float32})
-    i = (blockIdx().x-1) * blockDim().x + threadIdx().x
+    i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
 
-    for j in 1:256
+    for j in 1:2
         # Allocate a mutable struct and make sure it ends up on the GC heap.
         temp = TempStruct(unsafe_load(a, i))
         escape(temp)
+
+        # Allocate a large garbage buffer to force collections.
+        gc_malloc(Csize_t(256 * 1024))
+
+        # Use the mutable struct. If its memory has been reclaimed (by accident)
+        # then we expect the test at the end of this file to fail.
         unsafe_store!(b, temp.data, i)
     end
 
