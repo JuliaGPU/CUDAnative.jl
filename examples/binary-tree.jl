@@ -9,6 +9,8 @@ import Base: haskey, insert!
 # The main point of this example is to demonstrate that even
 # naive, pointer-chasing programs can be compiled to GPU kernels.
 
+const use_gc = true
+
 """A binary search tree node."""
 abstract type BinarySearchTreeNode{T} end
 
@@ -115,8 +117,8 @@ function fibonacci(::Type{T}, count::Integer)::Array{T} where T
     return results
 end
 
-const number_count = 2000
-const thread_count = 32
+const number_count = 200
+const thread_count = 64
 const tests_per_thread = 2000
 
 # Define a kernel that copies values using a temporary buffer.
@@ -152,7 +154,21 @@ destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 Mem.upload!(source_array, number_set)
 Mem.upload!(destination_array, test_sequence)
 
-# Run the kernel.
-@cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+if use_gc
+    # Run the kernel.
+    @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+
+    # Run it again.
+    Mem.upload!(destination_array, test_sequence)
+    stats = @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+else
+    # Run the kernel.
+    @cuda threads=thread_count kernel(source_pointer, destination_pointer)
+
+    # Run it again and time it this time.
+    Mem.upload!(destination_array, test_sequence)
+    stats = CUDAdrv.@elapsed @cuda threads=thread_count kernel(source_pointer, destination_pointer)
+end
+println(stats)
 
 @test Mem.download(Int64, destination_array, length(test_sequence)) == ([Int64(x in number_set) for x in test_sequence])
