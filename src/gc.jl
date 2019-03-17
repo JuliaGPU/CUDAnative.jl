@@ -45,7 +45,8 @@
 
 export @cuda_gc, gc_malloc, gc_collect, gc_safepoint
 
-import Base: length
+import Base: length, show
+import Printf: @sprintf
 
 # A data structure that precedes every chunk of memory that has been
 # allocated or put into the free list.
@@ -607,7 +608,7 @@ function gc_init!(
     local_arena_count::Integer = 8)::GCMasterRecord
 
     if warp_count == nothing
-        warp_count = thread_count / CUDAdrv.warpsize(device())
+        warp_count = Base.ceil(UInt32, thread_count / CUDAdrv.warpsize(device()))
     end
 
     master_region = heap.regions[1]
@@ -648,7 +649,7 @@ function gc_init!(
     global_arena = make_gc_arena!(arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
-        UInt32(warp_count),
+        warp_count,
         UInt32(thread_count),
         root_buffer_capacity,
         UInt32(local_arena_count),
@@ -841,125 +842,165 @@ function gc_compact_free_list(arena::Ptr{GCArenaRecord})::Csize_t
     return sum(record -> unsafe_load(record).size, records)
 end
 
+"""A report of the GC's actions."""
+mutable struct GCReport
+    """The total wall-clock time of a kernel execution."""
+    elapsed_time::Float64
+
+    """The number of collections that were performed."""
+    collection_count::Int
+
+    """The total wall-clock time of all collections."""
+    collection_time::Float64
+
+    """The total amount of additional memory allocated to local pools."""
+    extra_local_memory::Csize_t
+
+    """The total amount of additional memory allocated to the global pool."""
+    extra_global_memory::Csize_t
+
+    GCReport() = new(0.0, 0, 0.0, Csize_t(0), Csize_t(0))
+end
+
+function show(io::IO, report::GCReport)
+    print(io, "[wall-clock time: $(@sprintf("%.4f", report.elapsed_time)) s; ")
+    print(io, "collections: $(report.collection_count); ")
+    collection_percentage = 100 * report.collection_time / report.elapsed_time
+    print(io, "total collection time: $(@sprintf("%.4f", report.collection_time)) s ($(@sprintf("%.2f", collection_percentage))%); ")
+    print(io, "extra local memory: $(div(report.extra_local_memory, MiB)) MiB; ")
+    print(io, "extra global memory: $(div(report.extra_global_memory, MiB)) MiB]")
+end
+
 # Collects garbage. This function is designed to be called by the host,
 # not by the device.
-function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription)
-    # First off, we have to wait for all warps to reach a safepoint. Clear
-    # safepoint flags and wait for warps to set them again.
-    for i in 0:(master_record.warp_count - 1)
-        atomic_compare_exchange!(
-            master_record.safepoint_flags + i * sizeof(SafepointState),
-            in_safepoint,
-            not_in_safepoint)
-    end
-    safepoint_count = 0
-    while safepoint_count != master_record.warp_count
-        safepoint_count = 0
+function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription, report::GCReport)
+    collection_time = Base.@elapsed begin
+        # First off, we have to wait for all warps to reach a safepoint. Clear
+        # safepoint flags and wait for warps to set them again.
         for i in 0:(master_record.warp_count - 1)
-            state = volatile_load(master_record.safepoint_flags + i * sizeof(SafepointState))
-            if state != not_in_safepoint
-                safepoint_count += 1
+            atomic_compare_exchange!(
+                master_record.safepoint_flags + i * sizeof(SafepointState),
+                in_safepoint,
+                not_in_safepoint)
+        end
+        safepoint_count = 0
+        while safepoint_count != master_record.warp_count
+            safepoint_count = 0
+            for i in 0:(master_record.warp_count - 1)
+                state = volatile_load(master_record.safepoint_flags + i * sizeof(SafepointState))
+                if state != not_in_safepoint
+                    safepoint_count += 1
+                end
             end
         end
-    end
 
-    # The Julia CPU GC is precise and the information it uses for precise
-    # garbage collection is stored in memory that we should be able to access.
-    # However, the way the CPU GC stores field information is incredibly
-    # complicated and replicating that logic here would be a royal pain to
-    # implement and maintain. Ideally, the CPU GC would expose an interface that
-    # allows us to point to an object and ask the GC for all GC-tracked pointers
-    # it contains. Alas, no such luck: the CPU GC doesn't even have an internal
-    # function that does that. The CPU GC's logic for finding GC-tracked pointer
-    # fields is instead fused tightly with its 'mark' loop.
-    #
-    # To cope with this, we will simply implement a semi-conservative GC: we precisely
-    # scan the roots for pointers into the GC heap. We then recursively mark blocks
-    # that are pointed to by such pointers as live and conservatively scan them for
-    # more pointers.
-    #
-    # Our mark phase is fairly simple: we maintain a worklist of pointers that
-    # are live and may need to be processed, as well as a set of blocks that are
-    # live and have already been processed.
-    live_blocks = Set{Ptr{GCAllocationRecord}}()
-    live_worklist = Ptr{ObjectRef}[]
+        # The Julia CPU GC is precise and the information it uses for precise
+        # garbage collection is stored in memory that we should be able to access.
+        # However, the way the CPU GC stores field information is incredibly
+        # complicated and replicating that logic here would be a royal pain to
+        # implement and maintain. Ideally, the CPU GC would expose an interface that
+        # allows us to point to an object and ask the GC for all GC-tracked pointers
+        # it contains. Alas, no such luck: the CPU GC doesn't even have an internal
+        # function that does that. The CPU GC's logic for finding GC-tracked pointer
+        # fields is instead fused tightly with its 'mark' loop.
+        #
+        # To cope with this, we will simply implement a semi-conservative GC: we precisely
+        # scan the roots for pointers into the GC heap. We then recursively mark blocks
+        # that are pointed to by such pointers as live and conservatively scan them for
+        # more pointers.
+        #
+        # Our mark phase is fairly simple: we maintain a worklist of pointers that
+        # are live and may need to be processed, as well as a set of blocks that are
+        # live and have already been processed.
+        live_blocks = Set{Ptr{GCAllocationRecord}}()
+        live_worklist = Ptr{ObjectRef}[]
 
-    # Get a sorted allocation list, which will allow us to classify live pointers quickly.
-    alloc_list = sort_allocation_list(master_record)
+        # Get a sorted allocation list, which will allow us to classify live pointers quickly.
+        alloc_list = sort_allocation_list(master_record)
 
-    # Add all roots to the worklist.
-    for i in 1:(master_record.root_buffer_capacity * master_record.thread_count)
-        root = unsafe_load(master_record.root_buffers, i)
-        if root != C_NULL
-            push!(live_worklist, root)
-        end
-    end
-
-    # Now process all live pointers until we reach a fixpoint.
-    while !isempty(live_worklist)
-        # Pop a pointer from the worklist.
-        object_ref = pop!(live_worklist)
-        # Get the block for that pointer.
-        record = get_record(alloc_list, object_ref)
-        # Make sure that we haven't visited the block yet.
-        if record != C_NULL && !(record in live_blocks)
-            # Mark the block as live.
-            push!(live_blocks, record)
-            # Add all pointer-sized, aligned values to the live pointer worklist.
-            block_pointer = data_pointer(record)
-            block_size = unsafe_load(record).size
-            for i in 0:sizeof(ObjectRef):(block_size - 1)
-                push!(live_worklist, Base.unsafe_convert(ObjectRef, block_pointer + i))
+        # Add all roots to the worklist.
+        for i in 1:(master_record.root_buffer_capacity * master_record.thread_count)
+            root = unsafe_load(master_record.root_buffers, i)
+            if root != C_NULL
+                push!(live_worklist, root)
             end
         end
-    end
 
-    # We're done with the mark phase! Time to proceed to the sweep phase.
-    # The first thing we'll do is iterate through every arena's allocation list and
-    # free dead blocks. Next, we will compact and reorder free lists to combat
-    # fragmentation.
-    iterate_arenas(master_record) do arena
-        record_ptr = @get_field_pointer(arena, :allocation_list_head)
-        while true
-            record = unsafe_load(record_ptr)
-            if record == C_NULL
-                # We've reached the end of the list.
-                break
+        # Now process all live pointers until we reach a fixpoint.
+        while !isempty(live_worklist)
+            # Pop a pointer from the worklist.
+            object_ref = pop!(live_worklist)
+            # Get the block for that pointer.
+            record = get_record(alloc_list, object_ref)
+            # Make sure that we haven't visited the block yet.
+            if record != C_NULL && !(record in live_blocks)
+                # Mark the block as live.
+                push!(live_blocks, record)
+                # Add all pointer-sized, aligned values to the live pointer worklist.
+                block_pointer = data_pointer(record)
+                block_size = unsafe_load(record).size
+                for i in 0:sizeof(ObjectRef):(block_size - 1)
+                    push!(live_worklist, Base.unsafe_convert(ObjectRef, block_pointer + i))
+                end
+            end
+        end
+
+        # We're done with the mark phase! Time to proceed to the sweep phase.
+        # The first thing we'll do is iterate through every arena's allocation list and
+        # free dead blocks. Next, we will compact and reorder free lists to combat
+        # fragmentation.
+        iterate_arenas(master_record) do arena
+            record_ptr = @get_field_pointer(arena, :allocation_list_head)
+            while true
+                record = unsafe_load(record_ptr)
+                if record == C_NULL
+                    # We've reached the end of the list.
+                    break
+                end
+
+                if record in live_blocks
+                    # We found a live block. Proceed to the next block.
+                    record_ptr = @get_field_pointer(record, :next)
+                else
+                    # We found a dead block. Release it. Don't proceed to the
+                    # next block because the current block will change in the
+                    # next iteration of this loop.
+                    gc_free_local(arena, record_ptr)
+                end
             end
 
-            if record in live_blocks
-                # We found a live block. Proceed to the next block.
-                record_ptr = @get_field_pointer(record, :next)
+            # Compact the free list.
+            free_memory = gc_compact_free_list(arena)
+
+            # If the amount of free memory in the arena is below the starvation
+            # limit then we'll expand the GC heap and add the additional memory
+            # to the arena's free list.
+            threshold = if arena == master_record.global_arena
+                global_arena_starvation_threshold
             else
-                # We found a dead block. Release it. Don't proceed to the
-                # next block because the current block will change in the
-                # next iteration of this loop.
-                gc_free_local(arena, record_ptr)
+                local_arena_starvation_threshold
             end
-        end
 
-        # Compact the free list.
-        free_memory = gc_compact_free_list(arena)
+            if free_memory < threshold
+                region = expand!(heap, threshold)
 
-        # If the amount of free memory in the arena is below the starvation
-        # limit then we'll expand the GC heap and add the additional memory
-        # to the arena's free list.
-        threshold = if arena == master_record.global_arena
-            global_arena_starvation_threshold
-        else
-            local_arena_starvation_threshold
-        end
+                if arena == master_record.global_arena
+                    report.extra_global_memory += Csize_t(threshold)
+                else
+                    report.extra_local_memory += Csize_t(threshold)
+                end
 
-        if free_memory < threshold
-            region = expand!(heap, threshold)
-            extra_record = make_gc_block!(region.start, region.size)
-            last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
-            iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
-                last_free_list_ptr = @get_field_pointer(record, :next)
+                extra_record = make_gc_block!(region.start, region.size)
+                last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
+                iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
+                    last_free_list_ptr = @get_field_pointer(record, :next)
+                end
+                unsafe_store!(last_free_list_ptr, extra_record)
             end
-            unsafe_store!(last_free_list_ptr, extra_record)
         end
     end
+    report.collection_count += 1
+    report.collection_time += collection_time
 end
 
 # Examines a keyword argument list and gets either the value
@@ -1056,8 +1097,9 @@ macro cuda_gc(ex...)
                     end
                 end
 
+                local gc_report = GCReport()
                 local function handle_interrupt()
-                    gc_collect_impl(master_record, gc_heap)
+                    gc_collect_impl(master_record, gc_heap, gc_report)
                 end
 
                 try
@@ -1066,14 +1108,17 @@ macro cuda_gc(ex...)
                     local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
                     local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; gc = true, $(map(esc, compiler_kwargs)...))
                     CUDAnative.prepare_kernel(kernel; init=kernel_init, $(map(esc, env_kwargs)...))
-                    kernel(kernel_args...; $(map(esc, call_kwargs)...))
+                    gc_report.elapsed_time = Base.@elapsed begin
+                        kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
-                    # Handle interrupts.
-                    handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
+                        # Handle interrupts.
+                        handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
+                    end
                 finally
                     free_shared_array(host_interrupt_array)
                     free!(gc_heap)
                 end
+                gc_report
             end
          end)
     return code
