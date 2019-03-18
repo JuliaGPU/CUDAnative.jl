@@ -651,14 +651,19 @@ function insert_safepoints_gpugc!(fun::LLVM.Function, entry::LLVM.Function)
     # API doesn't expose.
 
     if has_gc_frame(fun)
+        safepoint_function = Runtime.get(:gc_safepoint)
         let builder = Builder(JuliaContext())
             for block in blocks(fun)
                 for instruction in instructions(block)
                     if is_non_intrinsic_call(instruction)
+                        if called_value(instruction) == safepoint_function
+                            continue
+                        end
+
                         # Insert a safepoint just before the call.
                         position!(builder, instruction)
                         debuglocation!(builder, instruction)
-                        call!(builder, Runtime.get(:gc_safepoint), LLVM.Value[])
+                        call!(builder, safepoint_function, LLVM.Value[])
                     end
                 end
             end

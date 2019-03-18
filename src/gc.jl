@@ -98,6 +98,125 @@ struct FreeListArena
     allocation_list_head::Ptr{FreeListRecord}
 end
 
+# A data structure that describes a ScatterAlloc superblock. Every
+# superblock is prefixed by one of these.
+struct ScatterAllocSuperblock
+    # The number of regions in the superblock.
+    region_count::UInt32
+
+    # The number of pages in a region managed by this superblock.
+    pages_per_region::UInt32
+
+    # The size of a page in the superblock, in bytes. This size
+    # does not include the page's header.
+    page_size::UInt32
+
+    # A pointer to the next superblock.
+    next::Ptr{ScatterAllocSuperblock}
+end
+
+# A region in a ScatterAlloc superblock.
+struct ScatterAllocRegion
+    # The number of pages in this region that are full.
+    full_page_count::Int64
+end
+
+# A page in a ScatterAlloc region.
+struct ScatterAllocPage
+    # The size of a chunk in this page.
+    chunk_size::Int64
+
+    # The number of allocated blocks in this page.
+    allocated_chunk_count::Int64
+
+    # A bitmask that describes which chunks have been allocated
+    # and which chunks are still free.
+    occupancy::Int64
+end
+
+const gc_align = Csize_t(16)
+
+# Aligns a pointer to an alignment boundary.
+function align_downward(address::Ptr{T}, alignment::Csize_t = gc_align)::Ptr{T} where T
+    address_int = Base.convert(Csize_t, address)
+    remainder = address_int % alignment
+    if remainder == Csize_t(0)
+        return address
+    else
+        return address + alignment - remainder
+    end
+end
+
+# Aligns a pointer to an alignment boundary.
+function align_upward(address::Ptr{T}, alignment::Csize_t = gc_align)::Ptr{T} where T
+    result = align_downward(address, alignment)
+    if result < address
+        result += alignment
+    end
+    result
+end
+
+# Aligns a pointer to an alignment boundary.
+function align_upward(offset::T, alignment::Csize_t = gc_align)::T where T <: Integer
+    convert(T, Csize_t(align_upward(convert(Ptr{UInt8}, Csize_t(offset)), alignment)))
+end
+
+# Gets the page size in a superblock. This size does not include
+# the page header.
+function page_size(superblock::Ptr{ScatterAllocSuperblock})
+    unsafe_load(@get_field_pointer(superblock, :page_size))
+end
+
+# Gets the number of pages per region in a superblock.
+function pages_per_region(superblock::Ptr{ScatterAllocSuperblock})
+    unsafe_load(@get_field_pointer(superblock, :pages_per_region))
+end
+
+# Gets the size of an aligned header, including padding to satisfy
+# alignment requirements.
+@generated function header_size(::Type{T}, ::Val{alignment} = Val(gc_align))::UInt32 where {T, alignment}
+    result = align_upward(UInt32(sizeof(T)), alignment)
+    :($result)
+end
+
+# Gets the total number of chunks in a particular page.
+function chunk_count(page::Ptr{ScatterAllocPage}, superblock::Ptr{ScatterAllocSuperblock})
+    chunk_size = unsafe_load(@get_field_pointer(page, :chunk_size))
+    div(page_size(superblock), chunk_size)
+end
+
+# Gets the address of a particular chunk in a page. `index` is zero-based.
+function chunk_address(page::Ptr{ScatterAllocPage}, index::Integer)::Ptr{UInt8}
+    chunk_size = unsafe_load(@get_field_pointer(page, :chunk_size))
+    Base.unsafe_convert(Ptr{UInt8}, page + header_size(ScatterAllocPage) + chunk_size * index)
+end
+
+# Gets the address of a particular page in a region. `index` is zero-based.
+function page_address(region::Ptr{ScatterAllocRegion}, superblock::Ptr{ScatterAllocSuperblock}, index::Integer)::Ptr{ScatterAllocPage}
+    Base.unsafe_convert(
+        Ptr{ScatterAllocPage},
+        region + header_size(ScatterAllocRegion) + index * (header_size(ScatterAllocPage) + page_size(superblock)))
+end
+
+# Gets the total size in bytes of a region, including overhead.
+function region_bytesize(pages_per_region::Integer, page_size::Integer)
+    region_data_size = pages_per_region * (header_size(ScatterAllocPage) + page_size)
+    header_size(ScatterAllocRegion) + region_data_size
+end
+
+# Gets the address of a particular region in a superblock. `index` is zero-based.
+function region_address(superblock::Ptr{ScatterAllocSuperblock}, index::Integer)::Ptr{ScatterAllocRegion}
+    Base.unsafe_convert(
+        Ptr{ScatterAllocPage},
+        superblock + header_size(ScatterAllocSuperblock) + index * region_bytesize(pages_per_region(superblock), page_size(superblock)))
+end
+
+# A GC arena that uses the ScatterAlloc algorithm for allocations.
+struct ScatterAllocArena
+    # A pointer to the first superblock managed by this arena.
+    first_superblock::Ptr{ScatterAllocSuperblock}
+end
+
 # A reference to a Julia object.
 const ObjectRef = Ptr{Nothing}
 
@@ -134,6 +253,10 @@ struct GCMasterRecord
 
     # The number of local arenas.
     local_arena_count::UInt32
+
+    # A pointer to the tiny arena, which uses the ScatterAlloc
+    # algorithm to provision space for small objects.
+    tiny_arena::Ptr{ScatterAllocArena}
 
     # A pointer to a list of local GC arena pointers.
     local_arenas::Ptr{Ptr{FreeListArena}}
@@ -293,19 +416,6 @@ macro perma_safepoint(expr)
     end
 end
 
-const gc_align = Csize_t(16)
-
-# Aligns a pointer to an alignment boundary.
-function align_to_boundary(address::Ptr{T}, alignment::Csize_t = gc_align)::Ptr{T} where T
-    address_int = Base.convert(Csize_t, address)
-    remainder = address_int % alignment
-    if remainder == Csize_t(0)
-        return address
-    else
-        return address + alignment - remainder
-    end
-end
-
 # Tries to use a free-list entry to allocate a chunk of data of size `bytesize`.
 # Updates the free list if the allocation succeeds. Returns a null pointer otherwise.
 function gc_use_free_list_entry(
@@ -332,7 +442,7 @@ function gc_use_free_list_entry(
     # Compute the start address of the new free list entry. The data
     # prefixed by the block needs to be aligned to a 16-byte boundary,
     # but the block itself doesn't.
-    new_data_address = align_to_boundary(data_address + bytesize)
+    new_data_address = align_downward(data_address + bytesize)
     new_entry_address = new_data_address - sizeof(FreeListRecord)
     if new_entry_address < data_address + bytesize
         new_entry_address += gc_align
@@ -376,6 +486,181 @@ function gc_use_free_list_entry(
     unsafe_store!(allocation_list_ptr, entry)
 
     return data_address
+end
+
+# Tries to allocate a chunk of memory from a ScatterAlloc page.
+# Returns a null pointer if no chunk of memory can be found.
+function gc_scatter_alloc_use_page(
+    page::Ptr{ScatterAllocPage},
+    region::Ptr{ScatterAllocRegion},
+    superblock::Ptr{ScatterAllocSuperblock})::Ptr{UInt8}
+
+    alloc_chunk_ptr = @get_field_pointer(page, :allocated_chunk_count)
+    fill_level = atomic_add!(alloc_chunk_ptr, 1)
+    spots = chunk_count(page, superblock)
+    if fill_level < spots
+        if fill_level + 1 == spots
+            # The page is full now. Increment the region's counter.
+            full_page_ptr = @get_field_pointer(region, :full_page_count)
+            atomic_add!(full_page_ptr, 1)
+        end
+
+        lane_id = (get_thread_id() - 1) % warpsize()
+        spot = lane_id % spots
+        occupancy_ptr = @get_field_pointer(page, :occupancy)
+        while true
+            # Check if our preferred spot is available.
+            mask = 1 << spot
+            old = atomic_or!(occupancy_ptr, mask)
+
+            actual_fill = 0
+            for i in 1:64
+                if old & (1 << (i - 1)) != 0
+                    actual_fill += 1
+                end
+            end
+
+            # If the spot is available, then use it.
+            if old & mask == 0
+                break
+            end
+
+            # Otherwise, find a new spot.
+            spot = (spot + 1) % spots
+        end
+        return chunk_address(page, spot)
+    end
+
+    # The page is full.
+    atomic_subtract!(alloc_chunk_ptr, 1)
+    return C_NULL
+end
+
+function scatter_alloc_hash(
+    superblock::Ptr{ScatterAllocSuperblock},
+    bytesize::Int64)::Int64
+
+    sb = unsafe_load(superblock)
+    page_count = sb.region_count * sb.pages_per_region
+    warp_id = get_warp_id() - 1
+
+    k_S = 38183
+    k_mp = 17497
+
+    (bytesize * k_S + warp_id * k_mp) % page_count
+end
+
+# Tries to allocate a chunk of memory from a ScatterAlloc superblock.
+# Returns a null pointer if no sufficiently large chunk of
+# memory can be found.
+function gc_scatter_alloc_use_superblock(
+    superblock::Ptr{ScatterAllocSuperblock},
+    bytesize::Csize_t)::Ptr{UInt8}
+
+    if bytesize > page_size(superblock)
+        # This isn't going to work. The superblock's page size is just too small.
+        return C_NULL
+    end
+
+    # Choose the allocation size in such a way that we never end up with more than
+    # 64 chunks. This is necessary because the chunk occupancy bitfield is only
+    # 64 bits wide.
+    alloc_size = Int64(div(page_size(superblock), 64))
+    if alloc_size < Int64(bytesize)
+        alloc_size = Int64(bytesize)
+    end
+
+    # Align the allocation size.
+    alloc_size = align_upward(alloc_size)
+
+    # We are looking for a chunk that is `bytesize` bytes in size,
+    # but we're willing to accept a chunk that is twice as large.
+    waste_factor = 2
+    max_size = alloc_size * waste_factor
+
+    pages_per_region = unsafe_load(@get_field_pointer(superblock, :pages_per_region))
+    region_count = unsafe_load(@get_field_pointer(superblock, :region_count))
+
+    # Guess a global page index.
+    global_page_id = scatter_alloc_hash(superblock, alloc_size)
+
+    # Decompose that global page index into a region index and a
+    # local page index.
+    region_id = global_page_id % pages_per_region
+    page_id = div(global_page_id, pages_per_region)
+
+    # Remember the initial values of the region and page ids.
+    init_region_id = region_id
+    init_page_id = page_id
+
+    # Find the region and page corresponding to the current page ID.
+    region = region_address(superblock, region_id)
+    while true
+        page = page_address(region, superblock, page_id)
+
+        # Skip regions until we find a region that is sufficiently empty.
+        while true
+            region_fill_level = unsafe_load(region).full_page_count / pages_per_region
+            if region_fill_level > 0.9
+                region_id += 1
+                if region_id >= region_count
+                    region_id = 0
+                end
+                region = region_address(superblock, region_id)
+                page_id = 0
+            else
+                break
+            end
+        end
+
+        # Try to set the chunk size to our preferred chunk size.
+        chunk_size_ptr = @get_field_pointer(page, :chunk_size)
+        chunk_size = atomic_compare_exchange!(chunk_size_ptr, 0, alloc_size)
+        if chunk_size == 0 || (chunk_size >= alloc_size && chunk_size <= max_size)
+            # If we managed to set the page's chunk size, then the page is definitely
+            # suitable for our purposes. Otherwise, the page might still be suitable
+            # if its chunk size is sufficiently large to accommodate the requested
+            # size yet small enough to not waste too much space.
+            result = gc_scatter_alloc_use_page(page, region, superblock)
+            if result != C_NULL
+                return result
+            end
+        end
+
+        # Try the next page.
+        page_id += 1
+
+        if page_id >= pages_per_region
+            region_id += 1
+            if region_id >= region_count
+                region_id = 0
+            end
+            region = region_address(superblock, region_id)
+            page_id = 0
+        end
+
+        # We tried every page in the entire superblock and found nothing.
+        if region_id == init_region_id && page_id == init_page_id
+            return C_NULL
+        end
+    end
+end
+
+# Tries to allocate a chunk of memory in a particular GC arena.
+# Returns a null pointer if no sufficiently large chunk of
+# memory can be found.
+function gc_malloc_local(arena::Ptr{ScatterAllocArena}, bytesize::Csize_t)::Ptr{UInt8}
+    # Walk the list of superblocks until we find a valid candidate.
+    superblock = unsafe_load(arena).first_superblock
+    while superblock != C_NULL
+        result = gc_scatter_alloc_use_superblock(superblock, bytesize)
+        if result != C_NULL
+            return result
+        end
+        superblock = unsafe_load(@get_field_pointer(superblock, :next))
+    end
+
+    return C_NULL
 end
 
 # Tries to allocate a chunk of memory from a free list.
@@ -441,24 +726,35 @@ This function is designed to be called by the device.
 function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     master_record = get_gc_master_record()
 
-    # Try to malloc the object without host intervention.
-    ptr = @perma_safepoint @nocollect begin
-        # Try to allocate in the local arena first. If that doesn't
+    function allocate()
+        # Try to allocate in the tiny arena first. The ScatterAlloc
+        # algorithm used by that arena is lock-free and works well
+        # for small objects.
+        if master_record.tiny_arena != C_NULL
+            local_ptr = gc_malloc_local(master_record.tiny_arena, bytesize)
+            if local_ptr != C_NULL
+                return local_ptr
+            end
+        end
+
+        # Try to allocate in the local arena second. If that doesn't
         # work, we'll move on to the global arena, which is bigger but
         # is shared by all threads. (We want to minimize contention
         # on the global arena's lock.)
         local_arena = get_local_arena()
-        local_ptr = Base.unsafe_convert(Ptr{UInt8}, C_NULL)
         if local_arena != C_NULL
             local_ptr = gc_malloc_local(local_arena, bytesize)
+            if local_ptr != C_NULL
+                return local_ptr
+            end
         end
 
-        if local_ptr == C_NULL
-            gc_malloc_local(master_record.global_arena, bytesize)
-        else
-            local_ptr
-        end
+        # Try to use the global arena if all else fails.
+        gc_malloc_local(master_record.global_arena, bytesize)
     end
+
+    # Try to malloc the object without host intervention.
+    ptr = @perma_safepoint @nocollect allocate()
     if ptr != C_NULL
         return ptr
     end
@@ -565,7 +861,7 @@ end
 # One megabyte.
 const MiB = 1 << 20
 
-# The initial size of the GC heap, currently 16 MiB.
+# The initial size of the GC heap, currently 20 MiB.
 const initial_gc_heap_size = 16 * MiB
 
 # The default capacity of a root buffer, i.e., the max number of
@@ -588,6 +884,14 @@ const global_arena_starvation_threshold = 4 * MiB
 # additional memory to the arena such that it is no longer starving.
 # The arena starvation threshold is currently set to 1 MiB.
 const local_arena_starvation_threshold = 1 * MiB
+
+# The point at which a tiny arena is deemed to be starving, i.e.,
+# it no longer contains enough memory to perform basic allocations.
+# If a tiny arena's free byte count stays below the arena starvation
+# threshold after a collection phase, the collector will allocate
+# additional memory to the arena such that it is no longer starving.
+# This arena starvation threshold is currently set to 2 MiB.
+const tiny_arena_starvation_threshold = 0 # 2 * MiB
 
 # A description of a region of memory that has been allocated to the GC heap.
 struct GCHeapRegion
@@ -645,24 +949,33 @@ function gc_init!(
         unsafe_store!(fingerbuf_ptr, rootbuf_ptr + (i - 1) * sizeof(ObjectRef) * root_buffer_capacity, i)
     end
 
-    # Compute a pointer to the start of the first arena.
+    # Compute a pointer to the start of the tiny arena.
     arena_start_ptr = rootbuf_ptr + rootbuf_bytesize
+
+    # Set up the tiny object arena.
+    if tiny_arena_starvation_threshold > 0
+        arena_for_ants = make_gc_arena!(ScatterAllocArena, arena_start_ptr, Csize_t(tiny_arena_starvation_threshold))
+        arena_start_ptr += tiny_arena_starvation_threshold
+    else
+        arena_for_ants = Base.unsafe_convert(Ptr{ScatterAllocArena}, C_NULL)
+    end
 
     # Set up local arenas.
     for i in 1:local_arena_count
-        local_arena = make_gc_arena!(arena_start_ptr, Csize_t(local_arena_starvation_threshold))
+        local_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
         unsafe_store!(local_arenas_ptr, local_arena, i)
         arena_start_ptr += local_arena_starvation_threshold
     end
 
     # Set up the global arena.
-    global_arena = make_gc_arena!(arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
+    global_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
         warp_count,
         UInt32(thread_count),
         root_buffer_capacity,
         UInt32(local_arena_count),
+        arena_for_ants,
         local_arenas_ptr,
         global_arena,
         safepoint_ptr,
@@ -684,7 +997,7 @@ end
 
 # Takes a zero-filled region of memory and turns it into an arena
 # managed by the GC, prefixed with an arena record.
-function make_gc_arena!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{FreeListArena} where T
+function make_gc_arena!(::Type{FreeListArena}, start_ptr::Ptr{T}, size::Csize_t)::Ptr{FreeListArena} where T
     # Create a single free list entry.
     first_entry_ptr = make_gc_block!(start_ptr + sizeof(FreeListArena), size - sizeof(FreeListArena))
 
@@ -693,6 +1006,48 @@ function make_gc_arena!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{FreeListArena} wh
     unsafe_store!(
         arena,
         FreeListArena(0, first_entry_ptr, C_NULL))
+
+    arena
+end
+
+# Takes a zero-filled region of memory and turns it into a ScatterAlloc
+# superblock.
+function make_gc_superblock!(
+    start_ptr::Ptr{T},
+    size::Csize_t;
+    page_size::UInt32 = UInt32(2048),
+    pages_per_region::UInt32 = UInt32(16))::Ptr{ScatterAllocSuperblock} where T
+
+    region_size = region_bytesize(pages_per_region, page_size)
+
+    # Figure out how many regions we can allocate.
+    region_count = div(size - header_size(ScatterAllocSuperblock), region_size)
+
+    # At this point, we'd normally allocate regions and pages.
+    # However, region and page headers are zero-initialized by default.
+    # So we don't actually need to do anything to set up the regions
+    # and pages.
+
+    # Allocate the superblock header.
+    superblock = Base.unsafe_convert(Ptr{ScatterAllocSuperblock}, align_upward(start_ptr))
+    unsafe_store!(
+        superblock,
+        ScatterAllocSuperblock(region_count, pages_per_region, page_size, C_NULL))
+
+    superblock
+end
+
+# Takes a zero-filled region of memory and turns it into an arena
+# managed by the GC, prefixed with an arena record.
+function make_gc_arena!(::Type{ScatterAllocArena}, start_ptr::Ptr{T}, size::Csize_t)::Ptr{ScatterAllocArena} where T
+    superblock_ptr = align_upward(start_ptr + sizeof(ScatterAllocArena))
+    superblock = make_gc_superblock!(superblock_ptr, Csize_t(start_ptr) + size - Csize_t(superblock_ptr))
+    arena = Base.unsafe_convert(Ptr{ScatterAllocArena}, start_ptr)
+    unsafe_store!(
+        arena,
+        ScatterAllocArena(superblock))
+
+    arena
 end
 
 # Tells if a GC heap contains a particular pointer.

@@ -34,6 +34,12 @@ function atomic_add!(lhs::Ptr{T}, rhs::T)::T where T
     atomic_rmw!(Val(:add), lhs, rhs)
 end
 
+# Atomically subtracts a value from a variable pointed to by a pointer.
+# Returns the previous value stored in that variable.
+function atomic_subtract!(lhs::Ptr{T}, rhs::T)::T where T
+    atomic_rmw!(Val(:sub), lhs, rhs)
+end
+
 # Atomically computes the logical or of a value and a variable pointed
 # to by a pointer. Returns the previous value stored in that variable.
 function atomic_or!(lhs::Ptr{T}, rhs::T)::T where T
