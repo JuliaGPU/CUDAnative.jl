@@ -50,7 +50,7 @@ import Printf: @sprintf
 
 # A data structure that precedes every chunk of memory that has been
 # allocated or put into the free list.
-struct GCAllocationRecord
+struct FreeListRecord
     # The size of the memory region this allocation record precedes.
     # This size does not include the allocation record itself.
     size::Csize_t
@@ -59,7 +59,7 @@ struct GCAllocationRecord
     # allocation record is part of the free list, then this pointer
     # points to the next free list entry; otherwise, it points to the
     # next entry in the list of allocated blocks.
-    next::Ptr{GCAllocationRecord}
+    next::Ptr{FreeListRecord}
 end
 
 @generated function get_field_pointer_impl(base_pointer::Ptr{TBase}, ::Val{field_name}) where {TBase, field_name}
@@ -75,27 +75,27 @@ macro get_field_pointer(base_pointer, field_name)
 end
 
 # Gets a pointer to the first byte of data managed by an allocation record.
-function data_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
-    Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(GCAllocationRecord)
+function data_pointer(record::Ptr{FreeListRecord})::Ptr{UInt8}
+    Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(FreeListRecord)
 end
 
 # Gets a pointer to the first byte of data no longer managed by an allocation record.
-function data_end_pointer(record::Ptr{GCAllocationRecord})::Ptr{UInt8}
+function data_end_pointer(record::Ptr{FreeListRecord})::Ptr{UInt8}
     data_pointer(record) + unsafe_load(@get_field_pointer(record, :size))
 end
 
 # A data structure that describes a single GC "arena", i.e.,
 # a section of the heap that is managed by the GC. Every arena
 # has its own free list and allocation list.
-struct GCArenaRecord
+struct FreeListArena
     # The allocation lock for the arena.
     lock_state::ReaderWriterLockState
 
     # The head of the free list.
-    free_list_head::Ptr{GCAllocationRecord}
+    free_list_head::Ptr{FreeListRecord}
 
     # The head of the allocation list.
-    allocation_list_head::Ptr{GCAllocationRecord}
+    allocation_list_head::Ptr{FreeListRecord}
 end
 
 # A reference to a Julia object.
@@ -136,10 +136,10 @@ struct GCMasterRecord
     local_arena_count::UInt32
 
     # A pointer to a list of local GC arena pointers.
-    local_arenas::Ptr{Ptr{GCArenaRecord}}
+    local_arenas::Ptr{Ptr{FreeListArena}}
 
     # A pointer to the global GC arena.
-    global_arena::Ptr{GCArenaRecord}
+    global_arena::Ptr{FreeListArena}
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
@@ -188,7 +188,7 @@ end
 
 # Gets a pointer to the local arena for this thread. This
 # pointer may be null if there are no local arenas.
-@inline function get_local_arena()::Ptr{GCArenaRecord}
+@inline function get_local_arena()::Ptr{FreeListArena}
     master_record = get_gc_master_record()
     if master_record.local_arena_count == UInt32(0)
         return C_NULL
@@ -309,9 +309,9 @@ end
 # Tries to use a free-list entry to allocate a chunk of data of size `bytesize`.
 # Updates the free list if the allocation succeeds. Returns a null pointer otherwise.
 function gc_use_free_list_entry(
-    entry_ptr::Ptr{Ptr{GCAllocationRecord}},
-    allocation_list_ptr::Ptr{Ptr{GCAllocationRecord}},
-    entry::Ptr{GCAllocationRecord},
+    entry_ptr::Ptr{Ptr{FreeListRecord}},
+    allocation_list_ptr::Ptr{Ptr{FreeListRecord}},
+    entry::Ptr{FreeListRecord},
     bytesize::Csize_t,)::Ptr{UInt8}
 
     entry_data = unsafe_load(entry)
@@ -333,7 +333,7 @@ function gc_use_free_list_entry(
     # prefixed by the block needs to be aligned to a 16-byte boundary,
     # but the block itself doesn't.
     new_data_address = align_to_boundary(data_address + bytesize)
-    new_entry_address = new_data_address - sizeof(GCAllocationRecord)
+    new_entry_address = new_data_address - sizeof(FreeListRecord)
     if new_entry_address < data_address + bytesize
         new_entry_address += gc_align
         new_data_address += gc_align
@@ -344,10 +344,10 @@ function gc_use_free_list_entry(
     if new_data_address < end_address
         # Create a new free list entry.
         new_entry_size = Csize_t(end_address) - Csize_t(new_data_address)
-        new_entry_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, new_entry_address)
+        new_entry_ptr = Base.unsafe_convert(Ptr{FreeListRecord}, new_entry_address)
         unsafe_store!(
             new_entry_ptr,
-            GCAllocationRecord(new_entry_size, entry_data.next))
+            FreeListRecord(new_entry_size, entry_data.next))
 
         # Update this entry's `size` field to reflect the new entry's space
         # requirements.
@@ -369,7 +369,7 @@ function gc_use_free_list_entry(
 
     # Set the `next` pointer to the value stored at the allocation list pointer.
     unsafe_store!(
-        @get_field_pointer(entry, :next)::Ptr{Ptr{GCAllocationRecord}},
+        @get_field_pointer(entry, :next)::Ptr{Ptr{FreeListRecord}},
         unsafe_load(allocation_list_ptr))
 
     # Update the allocation list pointer to point to the entry.
@@ -387,8 +387,8 @@ end
 #
 # This function is not thread-safe.
 function gc_malloc_from_free_list(
-    free_list_ptr::Ptr{Ptr{GCAllocationRecord}},
-    allocation_list_ptr::Ptr{Ptr{GCAllocationRecord}},
+    free_list_ptr::Ptr{Ptr{FreeListRecord}},
+    allocation_list_ptr::Ptr{Ptr{FreeListRecord}},
     bytesize::Csize_t)::Ptr{UInt8}
     # To allocate memory, we will walk the free list until we find a suitable candidate.
     while free_list_ptr != C_NULL
@@ -403,7 +403,7 @@ function gc_malloc_from_free_list(
             return result
         end
 
-        free_list_ptr = @get_field_pointer(free_list_item, :next)::Ptr{Ptr{GCAllocationRecord}}
+        free_list_ptr = @get_field_pointer(free_list_item, :next)::Ptr{Ptr{FreeListRecord}}
     end
     return C_NULL
 end
@@ -411,13 +411,13 @@ end
 # Tries to allocate a chunk of memory in a particular GC arena.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
-function gc_malloc_local(arena::Ptr{GCArenaRecord}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_local(arena::Ptr{FreeListArena}, bytesize::Csize_t)::Ptr{UInt8}
     # Acquire the arena's lock.
     arena_lock = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
     result_ptr = writer_locked(arena_lock) do
         # Allocate a suitable region of memory.
-        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{GCAllocationRecord}}
-        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{GCAllocationRecord}}
+        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
+        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{FreeListRecord}}
         gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
     end
 
@@ -526,8 +526,8 @@ end
 # case it should be prefixed by the `@nocollect` macro followed by
 # a write lock acquisition on the arena's lock.
 function gc_free_local(
-    arena::Ptr{GCArenaRecord},
-    record_ptr::Ptr{Ptr{GCAllocationRecord}})
+    arena::Ptr{FreeListArena},
+    record_ptr::Ptr{Ptr{FreeListRecord}})
 
     record = unsafe_load(record_ptr)
     next_record_ptr = @get_field_pointer(record, :next)
@@ -627,8 +627,8 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Allocate a local arena pointer buffer.
-    local_arenas_bytesize = sizeof(Ptr{GCArenaRecord}) * local_arena_count
-    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{GCArenaRecord}}, gc_memory_start_ptr)
+    local_arenas_bytesize = sizeof(Ptr{FreeListArena}) * local_arena_count
+    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{FreeListArena}}, gc_memory_start_ptr)
 
     # Allocate the safepoint flag buffer.
     safepoint_bytesize = sizeof(SafepointState) * warp_count
@@ -672,11 +672,11 @@ end
 
 # Takes a zero-filled region of memory and turns it into a block
 # managed by the GC, prefixed with an allocation record.
-function make_gc_block!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{GCAllocationRecord} where T
-    entry = Base.unsafe_convert(Ptr{GCAllocationRecord}, start_ptr)
+function make_gc_block!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{FreeListRecord} where T
+    entry = Base.unsafe_convert(Ptr{FreeListRecord}, start_ptr)
     unsafe_store!(
         entry,
-        GCAllocationRecord(
+        FreeListRecord(
             Csize_t(start_ptr + size) - Csize_t(data_pointer(entry)),
             C_NULL))
     return entry
@@ -684,15 +684,15 @@ end
 
 # Takes a zero-filled region of memory and turns it into an arena
 # managed by the GC, prefixed with an arena record.
-function make_gc_arena!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{GCArenaRecord} where T
+function make_gc_arena!(start_ptr::Ptr{T}, size::Csize_t)::Ptr{FreeListArena} where T
     # Create a single free list entry.
-    first_entry_ptr = make_gc_block!(start_ptr + sizeof(GCArenaRecord), size - sizeof(GCArenaRecord))
+    first_entry_ptr = make_gc_block!(start_ptr + sizeof(FreeListArena), size - sizeof(FreeListArena))
 
     # Set up the arena record.
-    arena = Base.unsafe_convert(Ptr{GCArenaRecord}, start_ptr)
+    arena = Base.unsafe_convert(Ptr{FreeListArena}, start_ptr)
     unsafe_store!(
         arena,
-        GCArenaRecord(0, first_entry_ptr, C_NULL))
+        FreeListArena(0, first_entry_ptr, C_NULL))
 end
 
 # Tells if a GC heap contains a particular pointer.
@@ -728,7 +728,7 @@ end
 struct SortedAllocationList
     # An array of pointers to allocation records. The pointers
     # are all sorted.
-    records::Array{Ptr{GCAllocationRecord}, 1}
+    records::Array{Ptr{FreeListRecord}, 1}
 end
 
 length(alloc_list::SortedAllocationList) = length(alloc_list.records)
@@ -738,9 +738,9 @@ length(alloc_list::SortedAllocationList) = length(alloc_list.records)
 # such record.
 function get_record(
     alloc_list::SortedAllocationList,
-    pointer::Ptr{T})::Ptr{GCAllocationRecord} where T
+    pointer::Ptr{T})::Ptr{FreeListRecord} where T
 
-    cast_ptr = Base.unsafe_convert(Ptr{GCAllocationRecord}, pointer)
+    cast_ptr = Base.unsafe_convert(Ptr{FreeListRecord}, pointer)
 
     # Deal with the most common cases quickly.
     if length(alloc_list) == 0 ||
@@ -781,7 +781,7 @@ end
 # Iterates through a linked list of allocation records and apply a function
 # to every node in the linked list. The function is allowed to modify allocation
 # records.
-@inline function iterate_allocation_records(fun::Function, head::Ptr{GCAllocationRecord})
+@inline function iterate_allocation_records(fun::Function, head::Ptr{FreeListRecord})
     while head != C_NULL
         fun(head)
         head = unsafe_load(head).next
@@ -807,9 +807,9 @@ end
 #   2. reorder free blocks to put small blocks at the front
 #      of the free list,
 #   3. tally the total number of free bytes and return that number.
-function gc_compact_free_list(arena::Ptr{GCArenaRecord})::Csize_t
+function gc_compact_free_list(arena::Ptr{FreeListArena})::Csize_t
     # Let's start by creating a list of all free list records.
-    records = Ptr{GCAllocationRecord}[]
+    records = Ptr{FreeListRecord}[]
     free_list_head = unsafe_load(arena).free_list_head
     iterate_allocation_records(free_list_head) do record
         push!(records, record)
@@ -930,7 +930,7 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
         # Our mark phase is fairly simple: we maintain a worklist of pointers that
         # are live and may need to be processed, as well as a set of blocks that are
         # live and have already been processed.
-        live_blocks = Set{Ptr{GCAllocationRecord}}()
+        live_blocks = Set{Ptr{FreeListRecord}}()
         live_worklist = Ptr{ObjectRef}[]
 
         # Get a sorted allocation list, which will allow us to classify live pointers quickly.
