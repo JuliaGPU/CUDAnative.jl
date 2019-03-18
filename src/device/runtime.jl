@@ -232,17 +232,8 @@ function T_pprjlvalue()
         LLVM.PointerType(eltype(T_pjlvalue), Tracked))
 end
 
-"""
-    gc_malloc_object(bytesize::Csize_t)
-
-Allocates an object that is managed by the garbage collector.
-This function is designed to be called by the device.
-"""
-function gc_malloc_object(bytesize::Csize_t)
-    return unsafe_pointer_to_objref(gc_malloc(bytesize))
-end
-
-compile(gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
+# Include the GC memory allocation function into the runtime.
+compile(CUDAnative.gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
 
 # Include GC frame management functions into the runtime.
 compile(CUDAnative.new_gc_frame, Any, (Cuint,), T_pprjlvalue)

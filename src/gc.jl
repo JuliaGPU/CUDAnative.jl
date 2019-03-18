@@ -43,7 +43,7 @@
 #   * When the device runs out of GC memory, it requests an interrupt
 #     to mark and sweep.
 
-export @cuda_gc, gc_malloc, gc_collect, gc_safepoint
+export @cuda_gc, gc_malloc, gc_malloc_object, gc_collect, gc_safepoint
 
 import Base: length, show
 import Printf: @sprintf
@@ -497,6 +497,16 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
     return C_NULL
 end
 
+"""
+    gc_malloc_object(bytesize::Csize_t)
+
+Allocates an object that is managed by the garbage collector.
+This function is designed to be called by the device.
+"""
+function gc_malloc_object(bytesize::Csize_t)
+    unsafe_pointer_to_objref(gc_malloc(bytesize))
+end
+
 # Zero-fills a range of memory.
 function zero_fill!(start_ptr::Ptr{UInt8}, size::Csize_t)
     ccall(:memset, Ptr{Cvoid}, (Ptr{Cvoid}, Cint, Csize_t), start_ptr, 0, size)
@@ -850,6 +860,9 @@ mutable struct GCReport
     """The number of collections that were performed."""
     collection_count::Int
 
+    """The total wall-clock time of all collection polls."""
+    collection_poll_time::Float64
+
     """The total wall-clock time of all collections."""
     collection_time::Float64
 
@@ -859,12 +872,14 @@ mutable struct GCReport
     """The total amount of additional memory allocated to the global pool."""
     extra_global_memory::Csize_t
 
-    GCReport() = new(0.0, 0, 0.0, Csize_t(0), Csize_t(0))
+    GCReport() = new(0.0, 0, 0.0, 0.0, Csize_t(0), Csize_t(0))
 end
 
 function show(io::IO, report::GCReport)
     print(io, "[wall-clock time: $(@sprintf("%.4f", report.elapsed_time)) s; ")
     print(io, "collections: $(report.collection_count); ")
+    poll_percentage = 100 * report.collection_poll_time / report.elapsed_time
+    print(io, "total poll time: $(@sprintf("%.4f", report.collection_poll_time)) s ($(@sprintf("%.2f", poll_percentage))%); ")
     collection_percentage = 100 * report.collection_time / report.elapsed_time
     print(io, "total collection time: $(@sprintf("%.4f", report.collection_time)) s ($(@sprintf("%.2f", collection_percentage))%); ")
     print(io, "extra local memory: $(div(report.extra_local_memory, MiB)) MiB; ")
@@ -874,7 +889,7 @@ end
 # Collects garbage. This function is designed to be called by the host,
 # not by the device.
 function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription, report::GCReport)
-    collection_time = Base.@elapsed begin
+    poll_time = Base.@elapsed begin
         # First off, we have to wait for all warps to reach a safepoint. Clear
         # safepoint flags and wait for warps to set them again.
         for i in 0:(master_record.warp_count - 1)
@@ -893,6 +908,9 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
                 end
             end
         end
+    end
+
+    collection_time = Base.@elapsed begin
 
         # The Julia CPU GC is precise and the information it uses for precise
         # garbage collection is stored in memory that we should be able to access.
@@ -1001,6 +1019,7 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
     end
     report.collection_count += 1
     report.collection_time += collection_time
+    report.collection_poll_time += poll_time
 end
 
 # Examines a keyword argument list and gets either the value
