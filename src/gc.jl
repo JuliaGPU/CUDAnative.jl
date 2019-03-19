@@ -98,6 +98,9 @@ struct FreeListArena
     allocation_list_head::Ptr{FreeListRecord}
 end
 
+# Gets a free list arena's lock.
+get_lock(arena::Ptr{FreeListArena}) = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
+
 # A data structure that describes a ScatterAlloc superblock. Every
 # superblock is prefixed by one of these.
 struct ScatterAllocSuperblock
@@ -217,6 +220,66 @@ struct ScatterAllocArena
     first_superblock::Ptr{ScatterAllocSuperblock}
 end
 
+# A "shelf" in a bodega arena. See `BodegaArena` for more info on
+# how shelves work.
+struct BodegaShelf
+    # The size of the chunks on this shelf.
+    chunk_size::Csize_t
+
+    # The maximal number of chunks on this shelf.
+    capacity::Int64
+
+    # An index into the shelf that points to the first free
+    # chunk. This is a zero-based index.
+    chunk_finger::Int64
+
+    # A pointer to an array of pointers to chunks of memory.
+    # Every chunk in this array has a chunk size that is
+    # at least as large as `chunk_size`.
+    chunks::Ptr{Ptr{UInt8}}
+end
+
+# A GC arena that uses a custom ("bodega") allocation algorithm for allocations.
+# Essentially, this type of arena has a list of "shelves" that contain small,
+# preallocated chunks of memory that threads can claim in a fast and lock-free
+# manner. When the shelves run out of memory, threads may re-stock them from free
+# list, amortizing the cost of lock acquisition across many different allocations.
+struct BodegaArena
+    # The number of shelves in the arena.
+    shelf_count::Int
+
+    # A pointer to an array of shelves.
+    shelves::Ptr{BodegaShelf}
+
+    # A Boolean that tells if it is sensible to try and restock shelves in this
+    # arena. Restocking shelves becomes futile once the free list's capacity is
+    # exhausted.
+    can_restock::Bool
+
+    # The free list this bodega uses for large allocations and for re-stocking
+    # the shelves.
+    free_list::FreeListArena
+end
+
+# Gets a pointer to a bodega arena's free list.
+function get_free_list(arena::Ptr{BodegaArena})::Ptr{FreeListArena}
+    @get_field_pointer(arena, :free_list)
+end
+
+# Gets the first shelf containing chunks that are at least `bytesize` bytes
+# in size. Returns null if there is no such shelf.
+function get_shelf(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{BodegaShelf}
+    bodega = unsafe_load(arena)
+    for i in 1:bodega.shelf_count
+        shelf = bodega.shelves + (i - 1) * sizeof(BodegaShelf)
+        chunk_size = unsafe_load(@get_field_pointer(shelf, :chunk_size))
+        if chunk_size >= bytesize
+            return shelf
+        end
+    end
+    return C_NULL
+end
+
 # A reference to a Julia object.
 const ObjectRef = Ptr{Nothing}
 
@@ -259,10 +322,10 @@ struct GCMasterRecord
     tiny_arena::Ptr{ScatterAllocArena}
 
     # A pointer to a list of local GC arena pointers.
-    local_arenas::Ptr{Ptr{FreeListArena}}
+    local_arenas::Ptr{Ptr{BodegaArena}}
 
     # A pointer to the global GC arena.
-    global_arena::Ptr{FreeListArena}
+    global_arena::Ptr{BodegaArena}
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
@@ -311,14 +374,14 @@ end
 
 # Gets a pointer to the local arena for this thread. This
 # pointer may be null if there are no local arenas.
-@inline function get_local_arena()::Ptr{FreeListArena}
+@inline function get_local_arena()::Ptr{BodegaArena}
     master_record = get_gc_master_record()
     if master_record.local_arena_count == UInt32(0)
         return C_NULL
     else
         return unsafe_load(
             master_record.local_arenas,
-            get_thread_id() % master_record.local_arena_count)
+            get_warp_id() % master_record.local_arena_count)
     end
 end
 
@@ -422,7 +485,7 @@ function gc_use_free_list_entry(
     entry_ptr::Ptr{Ptr{FreeListRecord}},
     allocation_list_ptr::Ptr{Ptr{FreeListRecord}},
     entry::Ptr{FreeListRecord},
-    bytesize::Csize_t,)::Ptr{UInt8}
+    bytesize::Csize_t)::Ptr{UInt8}
 
     entry_data = unsafe_load(entry)
     if entry_data.size < bytesize
@@ -693,27 +756,137 @@ function gc_malloc_from_free_list(
     return C_NULL
 end
 
+# Tries to allocate a chunk of memory from a free list.
+# Returns a null pointer if no sufficiently large chunk of
+# memory can be found.
+#
+# This function is not thread-safe.
+function gc_malloc_from_free_list(arena::Ptr{FreeListArena}, bytesize::Csize_t)::Ptr{UInt8}
+    free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
+    allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{FreeListRecord}}
+    gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
+end
+
+# Writes a pointer to a temporary GC frame. This will keep the pointer
+# from getting collected until the caller has a chance to add it to its
+# own GC frame.
+function gc_protect(pointer::Ptr{UInt8})
+    if pointer != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
+        gc_frame = new_gc_frame(UInt32(1))
+        unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, pointer))
+    end
+end
+
 # Tries to allocate a chunk of memory in a particular GC arena.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
 function gc_malloc_local(arena::Ptr{FreeListArena}, bytesize::Csize_t)::Ptr{UInt8}
     # Acquire the arena's lock.
-    arena_lock = ReaderWriterLock(@get_field_pointer(arena, :lock_state))
-    result_ptr = writer_locked(arena_lock) do
+    result_ptr = writer_locked(get_lock(arena)) do
         # Allocate a suitable region of memory.
-        free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
-        allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{FreeListRecord}}
-        gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
+        gc_malloc_from_free_list(arena, bytesize)
     end
 
     # If the resulting pointer is non-null, then we'll write it to a temporary GC frame.
     # Our reasoning for doing this is that doing so ensures that the allocated memory
     # won't get collected by the GC before the caller has a chance to add it to its
     # own GC frame.
-    if result_ptr != Base.unsafe_convert(Ptr{UInt8}, C_NULL)
-        gc_frame = new_gc_frame(UInt32(1))
-        unsafe_store!(gc_frame, Base.unsafe_convert(ObjectRef, result_ptr))
+    gc_protect(result_ptr)
+    return result_ptr
+end
+
+# Atomically takes a chunk from a shelf. Returns null if the shelf
+# is empty.
+function gc_malloc_from_shelf(shelf::Ptr{BodegaShelf})::Ptr{UInt8}
+    capacity = unsafe_load(@get_field_pointer(shelf, :capacity))
+
+    # Atomically increment the chunk finger.
+    finger_ptr = @get_field_pointer(shelf, :chunk_finger)
+    finger = atomic_add!(finger_ptr, 1)
+
+    if finger < capacity
+        # If the chunk finger was less than the capacity, then we actually
+        # managed to take a chunk from the shelf. We only need to retrieve
+        # its address.
+        chunk_array = unsafe_load(@get_field_pointer(shelf, :chunks))
+        return unsafe_load(chunk_array, finger + 1)
+    else
+        # Otherwise, we've got nothing. Return null.
+        return C_NULL
     end
+end
+
+# Re-stocks a shelf.
+function restock_shelf(arena::Ptr{BodegaArena}, shelf::Ptr{BodegaShelf})
+    shelf_size = unsafe_load(@get_field_pointer(shelf, :chunk_size))
+    capacity = unsafe_load(@get_field_pointer(shelf, :capacity))
+    finger_ptr = @get_field_pointer(shelf, :chunk_finger)
+    finger = unsafe_load(finger_ptr)
+
+    # The finger may exceed the capacity. This is harmless. Just
+    # reset the finger to the capacity.
+    if finger > capacity
+        finger = capacity
+    end
+
+    # Actually re-stock the shelf.
+    free_list = get_free_list(arena)
+    chunk_array = unsafe_load(@get_field_pointer(shelf, :chunks))
+    while finger > 0
+        chunk = gc_malloc_from_free_list(free_list, shelf_size)
+        if chunk == C_NULL
+            # We exhausted the free list. Better break now. Also set
+            # the arena's `can_restock` flag to false so there will be
+            # no future attempts to re-stock shelves.
+            unsafe_store!(@get_field_pointer(arena, :can_restock), false)
+            break
+        end
+
+        # Update the chunk array.
+        unsafe_store!(chunk_array, chunk, finger)
+        finger -= 1
+    end
+
+    # Update the finger.
+    unsafe_store!(finger_ptr, finger)
+end
+
+# Tries to allocate a chunk of memory in a particular GC arena.
+# Returns a null pointer if no sufficiently large chunk of
+# memory can be found.
+function gc_malloc_local(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{UInt8}
+    # The bodega arena might be empty (or approximately empty). If so, then we'll
+    # just return null early. There's no need to scrape the bottom of the barrel.
+    if !unsafe_load(@get_field_pointer(arena, :can_restock))
+        return C_NULL
+    end
+
+    # Find the right shelf for this allocation.
+    shelf = get_shelf(arena, bytesize)
+    free_list = get_free_list(arena)
+    if shelf == C_NULL
+        # The shelves' chunk sizes are all too small to accommodate this
+        # allocation. Use the free list directly.
+        return gc_malloc_local(free_list, bytesize)
+    end
+
+    # Acquire a reader lock on the arena and try to take a chunk
+    # from the shelf.
+    lock = get_lock(free_list)
+    result_ptr = reader_locked(lock) do
+        gc_malloc_from_shelf(shelf)
+    end
+
+    if result_ptr == C_NULL
+        # Looks like we need to re-stock the shelf. While we're at it,
+        # we might as well grab a chunk of memory for ourselves.
+        result_ptr = writer_locked(lock) do
+            restock_shelf(arena, shelf)
+            gc_malloc_from_free_list(free_list, bytesize)
+        end
+    end
+
+    gc_protect(result_ptr)
     return result_ptr
 end
 
@@ -931,8 +1104,8 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Allocate a local arena pointer buffer.
-    local_arenas_bytesize = sizeof(Ptr{FreeListArena}) * local_arena_count
-    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{FreeListArena}}, gc_memory_start_ptr)
+    local_arenas_bytesize = sizeof(Ptr{BodegaArena}) * local_arena_count
+    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{BodegaArena}}, gc_memory_start_ptr)
 
     # Allocate the safepoint flag buffer.
     safepoint_bytesize = sizeof(SafepointState) * warp_count
@@ -962,13 +1135,13 @@ function gc_init!(
 
     # Set up local arenas.
     for i in 1:local_arena_count
-        local_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
+        local_arena = make_gc_arena!(BodegaArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
         unsafe_store!(local_arenas_ptr, local_arena, i)
         arena_start_ptr += local_arena_starvation_threshold
     end
 
     # Set up the global arena.
-    global_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
+    global_arena = make_gc_arena!(BodegaArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
         warp_count,
@@ -1006,6 +1179,49 @@ function make_gc_arena!(::Type{FreeListArena}, start_ptr::Ptr{T}, size::Csize_t)
     unsafe_store!(
         arena,
         FreeListArena(0, first_entry_ptr, C_NULL))
+
+    arena
+end
+
+# Takes a zero-filled region of memory and turns it into an arena
+# managed by the GC, prefixed with an arena record.
+function make_gc_arena!(::Type{BodegaArena}, start_ptr::Ptr{T}, size::Csize_t)::Ptr{BodegaArena} where T
+    current_ptr = start_ptr + sizeof(BodegaArena)
+
+    # Set up some shelf chunk arrays
+    shelf_records = []
+    for chunk_size in [32, 64]
+        capacity = 2048
+        shelf_chunk_array = Base.unsafe_convert(Ptr{Ptr{UInt8}}, current_ptr)
+        current_ptr += capacity * sizeof(Ptr{UInt8})
+        push!(shelf_records, BodegaShelf(Csize_t(chunk_size), capacity, capacity, shelf_chunk_array))
+    end
+
+    # Set up the shelves.
+    shelf_array = Base.unsafe_convert(Ptr{BodegaShelf}, current_ptr)
+    for record in shelf_records
+        shelf = Base.unsafe_convert(Ptr{BodegaShelf}, current_ptr)
+        current_ptr += sizeof(BodegaShelf)
+        unsafe_store!(shelf, record)
+    end
+
+    # Set up a free list entry.
+    first_entry_ptr = make_gc_block!(current_ptr, Csize_t(start_ptr + size) - Csize_t(current_ptr))
+
+    # Set up the arena record.
+    arena = Base.unsafe_convert(Ptr{BodegaArena}, start_ptr)
+    unsafe_store!(
+        arena,
+        BodegaArena(
+            length(shelf_records),
+            shelf_array,
+            true,
+            FreeListArena(0, first_entry_ptr, C_NULL)))
+
+    # Stock the shelves.
+    for record in shelf_records
+        restock_shelf(arena, get_shelf(arena, record.chunk_size))
+    end
 
     arena
 end
@@ -1134,13 +1350,46 @@ function get_record(
 end
 
 # Iterates through a linked list of allocation records and apply a function
-# to every node in the linked list. The function is allowed to modify allocation
-# records.
-@inline function iterate_allocation_records(fun::Function, head::Ptr{FreeListRecord})
+# to every node in the linked list.
+function iterate_allocation_records(fun::Function, head::Ptr{FreeListRecord})
     while head != C_NULL
         fun(head)
         head = unsafe_load(head).next
     end
+end
+
+# Iterates through all active allocation records in a GC arena.
+function iterate_allocated(fun::Function, arena::Ptr{FreeListArena})
+    allocation_list_head = unsafe_load(arena).allocation_list_head
+    iterate_allocation_records(fun, allocation_list_head)
+end
+
+# Iterates through all active allocation records in a GC arena.
+function iterate_allocated(fun::Function, arena::Ptr{BodegaArena})
+    # Compose a set that contains all data addresses of chunks that
+    # are on the shelves.
+    arena_data = unsafe_load(arena)
+    chunks_on_shelves = Set{Ptr{UInt8}}()
+    for i in 1:arena_data.shelf_count
+        shelf = unsafe_load(arena_data.shelves, i)
+        for j in shelf.chunk_finger:(shelf.capacity - 1)
+            push!(chunks_on_shelves, unsafe_load(shelf.chunks, j))
+        end
+    end
+
+    # Now iterate through the allocation list, ignoring records that have
+    # been placed on the shelves.
+    iterate_allocated(get_free_list(arena)) do record
+        if !(data_pointer(record) in chunks_on_shelves)
+            fun(record)
+        end
+    end
+end
+
+# Iterates through all free allocation records in a GC arena.
+function iterate_free(fun::Function, arena::Ptr{FreeListArena})
+    free_list_head = unsafe_load(arena).free_list_head
+    iterate_allocation_records(fun, free_list_head)
 end
 
 # Takes a GC master record and constructs a sorted allocation list
@@ -1148,8 +1397,7 @@ end
 function sort_allocation_list(master_record::GCMasterRecord)::SortedAllocationList
     records = []
     iterate_arenas(master_record) do arena
-        allocation_list_head = unsafe_load(arena).allocation_list_head
-        iterate_allocation_records(allocation_list_head) do record
+        iterate_allocated(arena) do record
             push!(records, record)
         end
     end
@@ -1157,16 +1405,46 @@ function sort_allocation_list(master_record::GCMasterRecord)::SortedAllocationLi
     return SortedAllocationList(records)
 end
 
+# Frees all dead blocks in an arena.
+function gc_free_garbage(arena::Ptr{FreeListArena}, live_blocks::Set{Ptr{FreeListRecord}})
+    record_ptr = @get_field_pointer(arena, :allocation_list_head)
+    while true
+        record = unsafe_load(record_ptr)
+        if record == C_NULL
+            # We've reached the end of the list.
+            break
+        end
+
+        if record in live_blocks
+            # We found a live block. Proceed to the next block.
+            record_ptr = @get_field_pointer(record, :next)
+        else
+            # We found a dead block. Release it. Don't proceed to the
+            # next block because the current block will change in the
+            # next iteration of this loop.
+            gc_free_local(arena, record_ptr)
+        end
+    end
+end
+
+# Frees all dead blocks in an arena.
+function gc_free_garbage(arena::Ptr{BodegaArena}, live_blocks::Set{Ptr{FreeListRecord}})
+    # Free garbage in the free list sub-arena.
+    gc_free_garbage(get_free_list(arena), live_blocks)
+
+    # Mark the arena as ready for restocking.
+    unsafe_store!(@get_field_pointer(arena, :can_restock), true)
+end
+
 # Compact a GC arena's free list. This function will
 #   1. merge adjancent free blocks, and
 #   2. reorder free blocks to put small blocks at the front
 #      of the free list,
 #   3. tally the total number of free bytes and return that number.
-function gc_compact_free_list(arena::Ptr{FreeListArena})::Csize_t
+function gc_compact(arena::Ptr{FreeListArena})::Csize_t
     # Let's start by creating a list of all free list records.
     records = Ptr{FreeListRecord}[]
-    free_list_head = unsafe_load(arena).free_list_head
-    iterate_allocation_records(free_list_head) do record
+    iterate_free(arena) do record
         push!(records, record)
     end
 
@@ -1205,6 +1483,46 @@ function gc_compact_free_list(arena::Ptr{FreeListArena})::Csize_t
 
     # Compute the total number of free bytes.
     return sum(record -> unsafe_load(record).size, records)
+end
+
+# Compact a GC arena's free list. This function will
+#   1. merge adjancent free blocks, and
+#   2. reorder free blocks to put small blocks at the front
+#      of the free list,
+#   3. tally the total number of free bytes and return that number.
+function gc_compact(arena::Ptr{BodegaArena})::Csize_t
+    # Compact the free list.
+    tally = gc_compact(get_free_list(arena))
+
+    # Add the size of the chunks on shelves to the tally.
+    shelf_count = unsafe_load(@get_field_pointer(arena, :shelf_count))
+    for i in 1:shelf_count
+        shelf_array = unsafe_load(@get_field_pointer(arena, :shelves))
+        shelf_data = unsafe_load(shelf_array, i)
+
+        finger = shelf_data.chunk_finger
+        if finger > shelf_data.capacity
+            finger = shelf_data.capacity
+        end
+        tally += shelf_data.chunk_size * (shelf_data.capacity - finger)
+    end
+
+    tally
+end
+
+# Expands a GC arena by assigning it an additional heap region.
+function gc_expand(arena::Ptr{FreeListArena}, region::GCHeapRegion)
+    extra_record = make_gc_block!(region.start, region.size)
+    last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
+    iterate_free(arena) do record
+        last_free_list_ptr = @get_field_pointer(record, :next)
+    end
+    unsafe_store!(last_free_list_ptr, extra_record)
+end
+
+# Expands a GC arena by assigning it an additional heap region.
+function gc_expand(arena::Ptr{BodegaArena}, region::GCHeapRegion)
+    gc_expand(get_free_list(arena), region)
 end
 
 """A report of the GC's actions."""
@@ -1323,27 +1641,11 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
         # free dead blocks. Next, we will compact and reorder free lists to combat
         # fragmentation.
         iterate_arenas(master_record) do arena
-            record_ptr = @get_field_pointer(arena, :allocation_list_head)
-            while true
-                record = unsafe_load(record_ptr)
-                if record == C_NULL
-                    # We've reached the end of the list.
-                    break
-                end
+            # Free garbage blocks.
+            gc_free_garbage(arena, live_blocks)
 
-                if record in live_blocks
-                    # We found a live block. Proceed to the next block.
-                    record_ptr = @get_field_pointer(record, :next)
-                else
-                    # We found a dead block. Release it. Don't proceed to the
-                    # next block because the current block will change in the
-                    # next iteration of this loop.
-                    gc_free_local(arena, record_ptr)
-                end
-            end
-
-            # Compact the free list.
-            free_memory = gc_compact_free_list(arena)
+            # Compact the arena.
+            free_memory = gc_compact(arena)
 
             # If the amount of free memory in the arena is below the starvation
             # limit then we'll expand the GC heap and add the additional memory
@@ -1356,19 +1658,13 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
 
             if free_memory < threshold
                 region = expand!(heap, threshold)
+                gc_expand(arena, region)
 
                 if arena == master_record.global_arena
                     report.extra_global_memory += Csize_t(threshold)
                 else
                     report.extra_local_memory += Csize_t(threshold)
                 end
-
-                extra_record = make_gc_block!(region.start, region.size)
-                last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
-                iterate_allocation_records(unsafe_load(last_free_list_ptr)) do record
-                    last_free_list_ptr = @get_field_pointer(record, :next)
-                end
-                unsafe_store!(last_free_list_ptr, extra_record)
             end
         end
     end
