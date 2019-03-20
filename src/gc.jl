@@ -325,7 +325,7 @@ struct GCMasterRecord
     local_arenas::Ptr{Ptr{BodegaArena}}
 
     # A pointer to the global GC arena.
-    global_arena::Ptr{BodegaArena}
+    global_arena::Ptr{FreeListArena}
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
@@ -435,7 +435,7 @@ Signals that this warp has reached a GC safepoint.
 """
 function gc_safepoint()
     wait_for_interrupt() do
-        gc_set_safepoint_flag(in_safepoint)
+        gc_set_safepoint_flag(in_safepoint; overwrite = false)
     end
     return
 end
@@ -459,11 +459,15 @@ function gc_perma_safepoint()
 end
 
 # Sets this warp's safepoint flag to a particular state.
-function gc_set_safepoint_flag(value::SafepointState)
+function gc_set_safepoint_flag(value::SafepointState; overwrite::Bool = true)
     master_record = get_gc_master_record()
     warp_id = get_warp_id()
     safepoint_flag_ptr = master_record.safepoint_flags + sizeof(SafepointState) * (warp_id - 1)
-    volatile_store!(safepoint_flag_ptr, value)
+    if overwrite
+        volatile_store!(safepoint_flag_ptr, value)
+    else
+        atomic_compare_exchange!(safepoint_flag_ptr, not_in_safepoint, value)
+    end
     return
 end
 
@@ -922,8 +926,16 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
             end
         end
 
-        # Try to use the global arena if all else fails.
-        gc_malloc_local(master_record.global_arena, bytesize)
+        # Try to use the global arena if all else fails, but only if the chunk
+        # of memory we want to allocate is sufficiently large. Allocating lots of
+        # small chunks in the global arena will result in undue contention and slow
+        # down kernels dramatically.
+        if bytesize >= 1024
+            local_ptr = gc_malloc_local(master_record.global_arena, bytesize)
+        else
+            local_ptr = C_NULL
+        end
+        return local_ptr
     end
 
     # Try to malloc the object without host intervention.
@@ -939,11 +951,7 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
         # first thread that acquires the interrupt lock, but it is quite
         # likely to succeed if we are *not* in the first thread that
         # acquired the garbage collector lock.
-        #
-        # Note: don't try to allocate in the local arena first because
-        # we have already acquired a device-wide lock. Allocating in
-        # the local arena first might waste precious time.
-        ptr2 = gc_malloc_local(master_record.global_arena, bytesize)
+        ptr2 = allocate()
 
         if ptr2 == C_NULL
             # We are either the first thread to acquire the interrupt lock
@@ -1035,7 +1043,7 @@ end
 const MiB = 1 << 20
 
 # The initial size of the GC heap, currently 20 MiB.
-const initial_gc_heap_size = 16 * MiB
+const initial_gc_heap_size = 20 * MiB
 
 # The default capacity of a root buffer, i.e., the max number of
 # roots that can be stored per thread. Currently set to
@@ -1055,8 +1063,8 @@ const global_arena_starvation_threshold = 4 * MiB
 # If a local arena's free byte count stays below the arena starvation
 # threshold after a collection phase, the collector will allocate
 # additional memory to the arena such that it is no longer starving.
-# The arena starvation threshold is currently set to 1 MiB.
-const local_arena_starvation_threshold = 1 * MiB
+# The arena starvation threshold is currently set to 2 MiB.
+const local_arena_starvation_threshold = 2 * MiB
 
 # The point at which a tiny arena is deemed to be starving, i.e.,
 # it no longer contains enough memory to perform basic allocations.
@@ -1141,7 +1149,7 @@ function gc_init!(
     end
 
     # Set up the global arena.
-    global_arena = make_gc_arena!(BodegaArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
+    global_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
         warp_count,
