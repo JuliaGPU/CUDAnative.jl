@@ -7,19 +7,17 @@ Reset the CUDA state associated with a device. This call with release the underl
 context, at which point any objects allocated in that context will be invalidated.
 """
 function device_reset!(dev::CuDevice=CUDAdrv.device())
-    if haskey(CUDAnative.device_contexts, dev)
-        # take the context out of the pool, and finalize it to trigger release
-        old_ctx = CUDAnative.device_contexts[dev]
-        delete!(CUDAnative.device_contexts, dev)
-        finalize(old_ctx)
+    delete!(CUDAnative.device_contexts, dev)
 
-        # unless the user switches devices, new API calls should trigger initialization
-        CUDAdrv.apicall_hook[] = CUDAnative.maybe_initialize
-        CUDAnative.initialized[] = false
-        # HACK: the context changes, but CuCurrentContext() _can_ actually return a handle
-        # with the same pointer value... this bypasses the compile cache, and crashes
-        empty!(CUDAnative.compilecache)
-    end
+    pctx = CuPrimaryContext(dev)
+    unsafe_reset!(pctx)
+
+    # unless the user switches devices, new API calls should trigger initialization
+    CUDAdrv.apicall_hook[] = CUDAnative.maybe_initialize
+    CUDAnative.initialized[] = false
+
+    # HACK: primary contexts always have the same handle, defeating the compilation cache
+    empty!(CUDAnative.compilecache)
 end
 
 """
@@ -55,6 +53,6 @@ end
 
 macro cuda_benchmark(ex)
     esc(quote
-        @benchmark $(ex) teardown=(device_reset!()) evals=1
+        @benchmark $(ex) setup=($(ex)) teardown=(device_reset!()) evals=1
     end)
 end
