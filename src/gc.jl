@@ -303,6 +303,9 @@ const GCFrame = Ptr{ObjectRef}
     in_perma_safepoint = 2
 end
 
+const LocalArena = FreeListArena
+const GlobalArena = FreeListArena
+
 # A data structure that contains global GC info. This data
 # structure is designed to be immutable: it should not be changed
 # once the host has set it up.
@@ -325,10 +328,10 @@ struct GCMasterRecord
     tiny_arena::Ptr{ScatterAllocArena}
 
     # A pointer to a list of local GC arena pointers.
-    local_arenas::Ptr{Ptr{BodegaArena}}
+    local_arenas::Ptr{Ptr{LocalArena}}
 
     # A pointer to the global GC arena.
-    global_arena::Ptr{FreeListArena}
+    global_arena::Ptr{GlobalArena}
 
     # A pointer to a list of safepoint flags. Every warp has its
     # own flag.
@@ -377,10 +380,10 @@ end
 
 # Gets a pointer to the local arena for this thread. This
 # pointer may be null if there are no local arenas.
-@inline function get_local_arena()::Ptr{BodegaArena}
+@inline function get_local_arena()::Ptr{LocalArena}
     master_record = get_gc_master_record()
     if master_record.local_arena_count == UInt32(0)
-        return Base.unsafe_convert(Ptr{BodegaArena}, C_NULL)
+        return Base.unsafe_convert(Ptr{LocalArena}, C_NULL)
     else
         return unsafe_load(
             master_record.local_arenas,
@@ -1183,8 +1186,8 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Allocate a local arena pointer buffer.
-    local_arenas_bytesize = sizeof(Ptr{BodegaArena}) * local_arena_count
-    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{BodegaArena}}, gc_memory_start_ptr)
+    local_arenas_bytesize = sizeof(Ptr{LocalArena}) * local_arena_count
+    local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{LocalArena}}, gc_memory_start_ptr)
 
     # Allocate the safepoint flag buffer.
     safepoint_bytesize = sizeof(SafepointState) * warp_count
@@ -1214,13 +1217,13 @@ function gc_init!(
 
     # Set up local arenas.
     for i in 1:local_arena_count
-        local_arena = make_gc_arena!(BodegaArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
+        local_arena = make_gc_arena!(LocalArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
         unsafe_store!(local_arenas_ptr, local_arena, i)
         arena_start_ptr += local_arena_starvation_threshold
     end
 
     # Set up the global arena.
-    global_arena = make_gc_arena!(FreeListArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
+    global_arena = make_gc_arena!(GlobalArena, arena_start_ptr, Csize_t(gc_memory_end_ptr) - Csize_t(arena_start_ptr))
 
     return GCMasterRecord(
         warp_count,
@@ -1390,42 +1393,36 @@ function get_record(
     alloc_list::SortedAllocationList,
     pointer::Ptr{T})::Ptr{FreeListRecord} where T
 
-    cast_ptr = Base.unsafe_convert(Ptr{FreeListRecord}, pointer)
-
-    # Deal with the most common cases quickly.
+    # Deal with these cases quickly so we can assume that the
+    # free list is nonempty.
     if length(alloc_list) == 0 ||
         pointer < data_pointer(alloc_list.records[1]) ||
-        pointer > data_pointer(alloc_list.records[end]) + Base.unsafe_load(alloc_list.records[end]).size
+        pointer >= data_end_pointer(alloc_list.records[end])
 
         return C_NULL
     end
 
-    # To do this lookup quickly, we will do a binary search for the
-    # biggest allocation record pointer that is smaller than `pointer`.
+    # To quickly narrow down the search space, we will do a binary search
+    # for the biggest allocation record pointer that is smaller than `pointer`.
     range_start, range_end = 1, length(alloc_list)
-    while range_end - range_start > 1 
+    while range_end - range_start > 4
         range_mid = div(range_start + range_end, 2)
         mid_val = alloc_list.records[range_mid]
-        if mid_val > cast_ptr
+        if mid_val > pointer
             range_end = range_mid
         else
             range_start = range_mid
         end
     end
 
-    record = alloc_list.records[range_end]
-    if record >= cast_ptr
-        record = alloc_list.records[range_start]
-    end
-
     # Make sure that the pointer actually points to a region of memory
     # that is managed by the candidate record we found.
-    record_data_pointer = data_pointer(record)
-    if cast_ptr >= record_data_pointer && cast_ptr < record_data_pointer + unsafe_load(record).size
-        return record
-    else
-        return C_NULL
+    for record in alloc_list.records[range_start:range_end]
+        if pointer >= data_pointer(record) && pointer < data_end_pointer(record)
+            return record
+        end
     end
+    return C_NULL
 end
 
 # Iterates through a linked list of allocation records and apply a function
@@ -1561,7 +1558,7 @@ function gc_compact(arena::Ptr{FreeListArena})::Csize_t
     unsafe_store!(prev_record_ptr, C_NULL)
 
     # Compute the total number of free bytes.
-    return sum(record -> unsafe_load(record).size, records)
+    return sum(map(record -> unsafe_load(record).size, records))
 end
 
 # Compact a GC arena's free list. This function will
