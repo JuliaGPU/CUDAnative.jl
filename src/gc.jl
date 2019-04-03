@@ -1085,8 +1085,7 @@ function gc_free_local(
     free_list_head_ptr = @get_field_pointer(arena, :free_list_head)
 
     # Remove the record from the allocation list.
-    next_record = unsafe_load(next_record_ptr)
-    unsafe_store!(record_ptr, next_record)
+    unsafe_store!(record_ptr, unsafe_load(next_record_ptr))
 
     # Add the record to the free list and update its `next` pointer
     # (but not in that order).
@@ -1137,7 +1136,7 @@ const global_arena_starvation_threshold = 4 * MiB
 # If a local arena's free byte count stays below the arena starvation
 # threshold after a collection phase, the collector will allocate
 # additional memory to the arena such that it is no longer starving.
-# The arena starvation threshold is currently set to 2 MiB.
+# The arena starvation threshold is currently set to 1 MiB.
 const local_arena_starvation_threshold = 1 * MiB
 
 # The point at which a tiny arena is deemed to be starving, i.e.,
@@ -1704,10 +1703,9 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
                 # Mark the block as live.
                 push!(live_blocks, record)
                 # Add all pointer-sized, aligned values to the live pointer worklist.
-                block_pointer = data_pointer(record)
-                block_size = unsafe_load(record).size
-                for i in 0:sizeof(ObjectRef):(block_size - 1)
-                    push!(live_worklist, Base.unsafe_convert(ObjectRef, block_pointer + i))
+                for ptr in data_pointer(record):sizeof(ObjectRef):data_end_pointer(record) - 1
+                    value = unsafe_load(Base.unsafe_convert(Ptr{ObjectRef}, ptr))
+                    push!(live_worklist, value)
                 end
             end
         end
