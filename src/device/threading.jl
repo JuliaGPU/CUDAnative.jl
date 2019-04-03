@@ -127,12 +127,16 @@ function warp_serialized(func::Function)
 end
 
 """
-    reader_locked(func::Function, lock::ReaderWriterLock)
+    reader_locked(func::Function, lock::ReaderWriterLock; acquire_lock=true)
 
 Acquires a reader-writer lock in reader mode, runs `func` while the lock is
 acquired and releases the lock again.
 """
-function reader_locked(func::Function, lock::ReaderWriterLock)
+function reader_locked(func::Function, lock::ReaderWriterLock; acquire_lock=true)
+    if !acquire_lock
+        return func()
+    end
+
     while true
         # Increment the reader count. If the lock is in write-acquired mode,
         # then the lock will stay in that mode (unless the reader count is
@@ -157,12 +161,16 @@ function reader_locked(func::Function, lock::ReaderWriterLock)
 end
 
 """
-    writer_locked(func::Function, lock::ReaderWriterLock)
+    writer_locked(func::Function, lock::ReaderWriterLock; acquire_lock=true)
 
 Acquires a reader-writer lock in writer mode, runs `func` while the lock is
 acquired and releases the lock again.
 """
-function writer_locked(func::Function, lock::ReaderWriterLock)
+function writer_locked(func::Function, lock::ReaderWriterLock; acquire_lock=true)
+    if !acquire_lock
+        return func()
+    end
+
     warp_serialized() do
         # Try to move the lock from 'idle' to 'write-acquired'.
         while atomic_compare_exchange!(lock.state_ptr, 0, -max_rw_lock_readers) != 0

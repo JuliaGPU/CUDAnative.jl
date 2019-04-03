@@ -266,6 +266,9 @@ function get_free_list(arena::Ptr{BodegaArena})::Ptr{FreeListArena}
     @get_field_pointer(arena, :free_list)
 end
 
+# Gets a bodega arena's lock.
+get_lock(arena::Ptr{BodegaArena}) = get_lock(get_free_list(arena))
+
 # Gets the first shelf containing chunks that are at least `bytesize` bytes
 # in size. Returns null if there is no such shelf.
 function get_shelf(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{BodegaShelf}
@@ -377,11 +380,11 @@ end
 @inline function get_local_arena()::Ptr{BodegaArena}
     master_record = get_gc_master_record()
     if master_record.local_arena_count == UInt32(0)
-        return C_NULL
+        return Base.unsafe_convert(Ptr{BodegaArena}, C_NULL)
     else
         return unsafe_load(
             master_record.local_arenas,
-            get_warp_id() % master_record.local_arena_count)
+            ((get_warp_id() - 1) % master_record.local_arena_count) + 1)
     end
 end
 
@@ -483,13 +486,13 @@ macro perma_safepoint(expr)
     end
 end
 
-# Tries to use a free-list entry to allocate a chunk of data of size `bytesize`.
-# Updates the free list if the allocation succeeds. Returns a null pointer otherwise.
-function gc_use_free_list_entry(
+# Tries to use a free-list entry to allocate a chunk of data of size `bytesize`,
+# producing an appropriately-sized free list entry that prefixes the data. This
+# entry is removed from the free list but not yet added to the allocation list.
+function gc_take_list_entry(
     entry_ptr::Ptr{Ptr{FreeListRecord}},
-    allocation_list_ptr::Ptr{Ptr{FreeListRecord}},
     entry::Ptr{FreeListRecord},
-    bytesize::Csize_t)::Ptr{UInt8}
+    bytesize::Csize_t)::Ptr{FreeListRecord}
 
     entry_data = unsafe_load(entry)
     if entry_data.size < bytesize
@@ -540,19 +543,21 @@ function gc_use_free_list_entry(
         unsafe_store!(entry_ptr, entry_data.next)
     end
 
-    # At this point, all we need to do is update the allocation record to
-    # reflect the fact that it now represents an allocated block instead of
-    # a free block.
+    return entry
+end
+
+# Prepends a free list record to a free list.
+function gc_add_to_free_list(
+    entry::Ptr{FreeListRecord},
+    list_ptr::Ptr{Ptr{FreeListRecord}})
 
     # Set the `next` pointer to the value stored at the allocation list pointer.
     unsafe_store!(
         @get_field_pointer(entry, :next)::Ptr{Ptr{FreeListRecord}},
-        unsafe_load(allocation_list_ptr))
+        unsafe_load(list_ptr))
 
     # Update the allocation list pointer to point to the entry.
-    unsafe_store!(allocation_list_ptr, entry)
-
-    return data_address
+    unsafe_store!(list_ptr, entry)
 end
 
 # Tries to allocate a chunk of memory from a ScatterAlloc page.
@@ -733,24 +738,22 @@ end
 # Tries to allocate a chunk of memory from a free list.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
-#
-# `free_list_ptr` is a pointer to the head of the free list.
-# `allocation_list_ptr` is a pointer to the head of the allocation list.
-#
-# This function is not thread-safe.
-function gc_malloc_from_free_list(
+# If the result is non-null, then a free list record is
+# returned that has been taken from the free list but not
+# yet added to another list.
+function gc_take_any_list_entry(
     free_list_ptr::Ptr{Ptr{FreeListRecord}},
-    allocation_list_ptr::Ptr{Ptr{FreeListRecord}},
-    bytesize::Csize_t)::Ptr{UInt8}
+    bytesize::Csize_t)::Ptr{FreeListRecord}
+
     # To allocate memory, we will walk the free list until we find a suitable candidate.
-    while free_list_ptr != C_NULL
+    while true
         free_list_item = unsafe_load(free_list_ptr)
 
         if free_list_item == C_NULL
             break
         end
 
-        result = gc_use_free_list_entry(free_list_ptr, allocation_list_ptr, free_list_item, bytesize)
+        result = gc_take_list_entry(free_list_ptr, free_list_item, bytesize)
         if result != C_NULL
             return result
         end
@@ -768,7 +771,20 @@ end
 function gc_malloc_from_free_list(arena::Ptr{FreeListArena}, bytesize::Csize_t)::Ptr{UInt8}
     free_list_ptr = @get_field_pointer(arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
     allocation_list_ptr = @get_field_pointer(arena, :allocation_list_head)::Ptr{Ptr{FreeListRecord}}
-    gc_malloc_from_free_list(free_list_ptr, allocation_list_ptr, bytesize)
+
+    # Try to take the entry out of the free list.
+    result_entry = gc_take_any_list_entry(free_list_ptr, bytesize)
+    if result_entry == C_NULL
+        # The entry is just too small. Return a `null` pointer.
+        return C_NULL
+    end
+
+    # At this point, all we need to do is update the allocation record to
+    # reflect the fact that it now represents an allocated block instead of
+    # a free block.
+    gc_add_to_free_list(result_entry, allocation_list_ptr)
+
+    return data_pointer(result_entry)
 end
 
 # Writes a pointer to a temporary GC frame. This will keep the pointer
@@ -784,9 +800,9 @@ end
 # Tries to allocate a chunk of memory in a particular GC arena.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
-function gc_malloc_local(arena::Ptr{FreeListArena}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_local(arena::Ptr{FreeListArena}, bytesize::Csize_t; acquire_lock=true)::Ptr{UInt8}
     # Acquire the arena's lock.
-    result_ptr = writer_locked(get_lock(arena)) do
+    result_ptr = writer_locked(get_lock(arena); acquire_lock=acquire_lock) do
         # Allocate a suitable region of memory.
         gc_malloc_from_free_list(arena, bytesize)
     end
@@ -858,7 +874,7 @@ end
 # Tries to allocate a chunk of memory in a particular GC arena.
 # Returns a null pointer if no sufficiently large chunk of
 # memory can be found.
-function gc_malloc_local(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{UInt8}
+function gc_malloc_local(arena::Ptr{BodegaArena}, bytesize::Csize_t; acquire_lock=true)::Ptr{UInt8}
     # The bodega arena might be empty (or approximately empty). If so, then we'll
     # just return null early. There's no need to scrape the bottom of the barrel.
     if !unsafe_load(@get_field_pointer(arena, :can_restock))
@@ -877,14 +893,14 @@ function gc_malloc_local(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{UInt8}
     # Acquire a reader lock on the arena and try to take a chunk
     # from the shelf.
     lock = get_lock(free_list)
-    result_ptr = reader_locked(lock) do
+    result_ptr = reader_locked(lock; acquire_lock=acquire_lock) do
         gc_malloc_from_shelf(shelf)
     end
 
     if result_ptr == C_NULL
         # Looks like we need to re-stock the shelf. While we're at it,
         # we might as well grab a chunk of memory for ourselves.
-        result_ptr = writer_locked(lock) do
+        result_ptr = writer_locked(lock; acquire_lock=acquire_lock) do
             restock_shelf(arena, shelf)
             gc_malloc_from_free_list(free_list, bytesize)
         end
@@ -892,6 +908,48 @@ function gc_malloc_local(arena::Ptr{BodegaArena}, bytesize::Csize_t)::Ptr{UInt8}
 
     gc_protect(result_ptr)
     return result_ptr
+end
+
+# Transfers a block of free memory from one arena to another and then
+# allocates a differently-sized block of memory from the destination
+# arena.
+function gc_transfer_and_malloc(
+    from_arena::Ptr{FreeListArena},
+    to_arena::Ptr{FreeListArena},
+    transfer_bytesize::Csize_t,
+    alloc_bytesize::Csize_t)::Ptr{UInt8}
+
+    from_free_list = @get_field_pointer(from_arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
+    entry = writer_locked(get_lock(from_arena)) do
+        # Try to take the entry out of the free list.
+        gc_take_any_list_entry(from_free_list, transfer_bytesize)
+    end
+
+    if entry == C_NULL
+        return C_NULL
+    else
+        to_free_list = @get_field_pointer(to_arena, :free_list_head)::Ptr{Ptr{FreeListRecord}}
+        return writer_locked(get_lock(to_arena)) do
+            gc_add_to_free_list(entry, to_free_list)
+            gc_malloc_local(to_arena, alloc_bytesize; acquire_lock=false)
+        end
+    end
+end
+
+# Transfers a block of free memory from one arena to another and then
+# allocates a differently-sized block of memory from the destination
+# arena.
+function gc_transfer_and_malloc(
+    from_arena::Ptr{FreeListArena},
+    to_arena::Ptr{BodegaArena},
+    transfer_bytesize::Csize_t,
+    alloc_bytesize::Csize_t)::Ptr{UInt8}
+
+    gc_transfer_and_malloc(
+        from_arena,
+        get_free_list(to_arena),
+        transfer_bytesize,
+        alloc_bytesize)
 end
 
 """
@@ -924,16 +982,29 @@ function gc_malloc(bytesize::Csize_t)::Ptr{UInt8}
             if local_ptr != C_NULL
                 return local_ptr
             end
+        else
+            # If there is no local arena then we will just have to allocate
+            # from the global arena directly.
+            return gc_malloc_local(master_record.global_arena, bytesize)
         end
 
         # Try to use the global arena if all else fails, but only if the chunk
         # of memory we want to allocate is sufficiently large. Allocating lots of
         # small chunks in the global arena will result in undue contention and slow
         # down kernels dramatically.
-        if bytesize >= 1024
+        #
+        # If we need to allocate a small chunk of memory but the local arena is
+        # empty, then we will transfer a *much* larger chunk of memory from the global
+        # arena to the local arena. After that we'll allocate in the local arena.
+        min_global_alloc_size = Csize_t(256 * (1 << 10))
+        if bytesize >= min_global_alloc_size
             local_ptr = gc_malloc_local(master_record.global_arena, bytesize)
         else
-            local_ptr = C_NULL
+            local_ptr = gc_transfer_and_malloc(
+                master_record.global_arena,
+                local_arena,
+                min_global_alloc_size,
+                bytesize)
         end
         return local_ptr
     end
@@ -1042,8 +1113,8 @@ end
 # One megabyte.
 const MiB = 1 << 20
 
-# The initial size of the GC heap, currently 20 MiB.
-const initial_gc_heap_size = 20 * MiB
+# The initial size of the GC heap, currently 16 MiB.
+const initial_gc_heap_size = 16 * MiB
 
 # The default capacity of a root buffer, i.e., the max number of
 # roots that can be stored per thread. Currently set to
@@ -1064,7 +1135,7 @@ const global_arena_starvation_threshold = 4 * MiB
 # threshold after a collection phase, the collector will allocate
 # additional memory to the arena such that it is no longer starving.
 # The arena starvation threshold is currently set to 2 MiB.
-const local_arena_starvation_threshold = 2 * MiB
+const local_arena_starvation_threshold = 1 * MiB
 
 # The point at which a tiny arena is deemed to be starving, i.e.,
 # it no longer contains enough memory to perform basic allocations.
