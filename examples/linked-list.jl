@@ -45,8 +45,8 @@ function sum(list::List{T}) where T
     reduce(+, list; init=zero(T))
 end
 
-const element_count = 200
-const thread_count = 256
+const element_count = 1000
+const thread_count = 32
 
 function kernel(elements::CUDAnative.DevicePtr{Int64}, results::CUDAnative.DevicePtr{Int64})
     i = (blockIdx().x-1) * blockDim().x + threadIdx().x

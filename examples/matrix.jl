@@ -5,7 +5,6 @@
 
 using StaticArrays, CUDAnative, CUDAdrv
 import Base: getindex, setindex!, pointer, unsafe_convert, zeros
-using InteractiveUtils
 
 const use_gc = true
 
