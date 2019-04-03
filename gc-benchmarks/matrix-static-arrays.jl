@@ -1,4 +1,10 @@
-using StaticArrays, CUDAnative, CUDAdrv, BenchmarkTools
+using StaticArrays, CUDAnative, CUDAdrv
+
+include("utils.jl")
+
+# This benchmark makes every thread allocate a large matrix.
+# It stresses the allocator's ability to quickly allocate
+# a small number of very large objects.
 
 const matrix_dim = 40
 const thread_count = 256
@@ -21,14 +27,10 @@ function kernel(result::CUDAnative.DevicePtr{Int64})
     return
 end
 
-include("utils.jl")
-
 function benchmark()
     destination_array = Mem.alloc(Int64, thread_count)
     destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
     @cuda_sync threads=thread_count kernel(destination_pointer)
 end
 
-stats = @cuda_benchmark benchmark()
-println(length(stats))
-println(stats)
+@cuda_benchmark benchmark()

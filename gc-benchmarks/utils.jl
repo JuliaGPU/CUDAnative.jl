@@ -1,3 +1,5 @@
+import BenchmarkTools
+
 use_gc = true
 
 """
@@ -53,6 +55,8 @@ end
 
 macro cuda_benchmark(ex)
     esc(quote
-        @benchmark $(ex) setup=($(ex)) teardown=(device_reset!()) evals=1
+        local stats = BenchmarkTools.@benchmark $(ex) setup=($(ex)) teardown=(device_reset!()) evals=1
+        println(length(stats))
+        println(stats)
     end)
 end
