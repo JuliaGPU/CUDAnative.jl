@@ -450,7 +450,7 @@ functionality is included in [`@cuda`](@ref).
 The 'init' keyword argument is a function that takes a kernel as argument and
 sets up an environment for the kernel.
 """
-function prepare_kernel(kernel::Kernel{F,TT}; init::Function=nop_init_kernel) where {F,TT}
+function prepare_kernel(kernel::AbstractKernel{F,TT}; init::Function=nop_init_kernel) where {F,TT}
     # Just call the 'init' function for now.
     init(kernel)
 end
@@ -514,7 +514,7 @@ function nearest_warpsize(dev::CuDevice, threads::Integer)
     return threads + (ws - threads % ws) % ws
 end
 
-function nop_init_kernel(kernel::Kernel{F,TT}) where {F,TT}
+function nop_init_kernel(kernel::AbstractKernel{F,TT}) where {F,TT}
     # Do nothing.
     return
 end

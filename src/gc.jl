@@ -1795,7 +1795,7 @@ macro cuda_gc(ex...)
     args = call.args[2:end]
 
     code = quote end
-    compiler_kwargs, call_kwargs, env_kwargs = CUDAnative.split_kwargs(kwargs)
+    env_kwargs, compiler_kwargs, call_kwargs = CUDAnative.split_kwargs(kwargs)
     vars, var_exprs = CUDAnative.assign_args!(code, args)
 
     # Find the stream on which the kernel is to be scheduled.

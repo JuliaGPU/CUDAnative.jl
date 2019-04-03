@@ -30,7 +30,6 @@ include(joinpath("device", "pointer.jl"))
 include(joinpath("device", "array.jl"))
 include(joinpath("device", "cuda.jl"))
 include(joinpath("device", "llvm.jl"))
-include(joinpath("device", "runtime.jl"))
 include(joinpath("device", "threading.jl"))
 
 # The interrupts and GC files need to be loaded _before_ the

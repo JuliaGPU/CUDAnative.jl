@@ -70,7 +70,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
 
         ModulePassManager() do pm
             initialize!(pm)
-            if ctx.gc
+            if job.gc
                 add!(pm, FunctionPass("InsertSafepointsGPUGC", fun -> insert_safepoints_gpugc!(fun, entry)))
                 add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
             else
