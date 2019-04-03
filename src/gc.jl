@@ -1115,8 +1115,8 @@ end
 # One megabyte.
 const MiB = 1 << 20
 
-# The initial size of the GC heap, currently 16 MiB.
-const initial_gc_heap_size = 16 * MiB
+# The initial size of the GC heap, currently 10 MiB.
+const initial_gc_heap_size = 10 * MiB
 
 # The default capacity of a root buffer, i.e., the max number of
 # roots that can be stored per thread. Currently set to
