@@ -15,26 +15,6 @@ function set_malloc_heap_size(size::Integer)
 end
 
 """
-    device_reset!(dev::CuDevice=device())
-
-Reset the CUDA state associated with a device. This call with release the underlying
-context, at which point any objects allocated in that context will be invalidated.
-"""
-function device_reset!(dev::CuDevice=CUDAdrv.device())
-    delete!(CUDAnative.device_contexts, dev)
-
-    pctx = CuPrimaryContext(dev)
-    unsafe_reset!(pctx)
-
-    # unless the user switches devices, new API calls should trigger initialization
-    CUDAdrv.apicall_hook[] = CUDAnative.maybe_initialize
-    CUDAnative.initialized[] = false
-
-    # HACK: primary contexts always have the same handle, defeating the compilation cache
-    empty!(CUDAnative.compilecache)
-end
-
-"""
     @sync ex
 Run expression `ex` and synchronize the GPU afterwards. This is a CPU-friendly
 synchronization, i.e. it performs a blocking synchronization without increasing CPU load. As
