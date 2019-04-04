@@ -1,4 +1,4 @@
-using CUDAnative, CUDAdrv, BenchmarkTools
+using CUDAnative, CUDAdrv
 using Test
 
 include("utils.jl")
