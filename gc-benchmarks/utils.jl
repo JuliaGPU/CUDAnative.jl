@@ -2,6 +2,18 @@ import BenchmarkTools
 
 use_gc = true
 
+const MiB = 1 << 20
+const CU_LIMIT_MALLOC_HEAP_SIZE = 0x02
+const BENCHMARK_HEAP_SIZE = 64 * MiB
+
+function set_malloc_heap_size(size::Integer)
+    CUDAdrv.@apicall(
+        :cuCtxSetLimit,
+        (Cint, Csize_t),
+        CU_LIMIT_MALLOC_HEAP_SIZE,
+        Csize_t(size))
+end
+
 """
     device_reset!(dev::CuDevice=device())
 
@@ -55,7 +67,7 @@ end
 
 macro cuda_benchmark(ex)
     esc(quote
-        local stats = BenchmarkTools.@benchmark $(ex) setup=($(ex)) teardown=(device_reset!()) evals=1
+        local stats = BenchmarkTools.@benchmark $(ex) setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $(ex)) teardown=(device_reset!()) evals=1
         println(length(stats))
         println(stats)
     end)
