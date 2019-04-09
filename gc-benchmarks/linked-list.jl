@@ -1,8 +1,7 @@
+module LinkedList
+
 using CUDAnative, CUDAdrv
 using Test
-
-include("utils.jl")
-
 import Base: foldl, reduce, sum
 
 # This benchmark constructs a linked list in a GPU kernel.
@@ -60,22 +59,24 @@ function kernel(elements::CUDAnative.DevicePtr{Int64}, results::CUDAnative.Devic
     return
 end
 
-function benchmark()
+end
+
+function linkedlist_benchmark()
     # Allocate two arrays.
-    source_array = Mem.alloc(Int64, element_count)
-    destination_array = Mem.alloc(Int64, thread_count)
+    source_array = Mem.alloc(Int64, LinkedList.element_count)
+    destination_array = Mem.alloc(Int64, LinkedList.thread_count)
     source_pointer = Base.unsafe_convert(CuPtr{Int64}, source_array)
     destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
     # Fill the source and destination arrays.
-    Mem.upload!(source_array, Array(1:element_count))
-    Mem.upload!(destination_array, zeros(Int64, thread_count))
+    Mem.upload!(source_array, Array(1:LinkedList.element_count))
+    Mem.upload!(destination_array, zeros(Int64, LinkedList.thread_count))
 
     # Run the kernel.
-    @cuda_sync threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda_sync threads=LinkedList.thread_count LinkedList.kernel(source_pointer, destination_pointer)
 
     # Verify the kernel's output.
-    @test Mem.download(Int64, destination_array, thread_count) == repeat([sum(1:element_count)], thread_count)
+    @test Mem.download(Int64, destination_array, LinkedList.thread_count) == repeat([sum(1:LinkedList.element_count)], LinkedList.thread_count)
 end
 
-@cuda_benchmark benchmark()
+@cuda_benchmark "linked-list" linkedlist_benchmark()

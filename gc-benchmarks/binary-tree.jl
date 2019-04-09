@@ -1,8 +1,9 @@
-using CUDAdrv, CUDAnative
 using Random, Test
-import Base: haskey, insert!
 
-include("utils.jl")
+module BinaryTree
+
+using CUDAdrv, CUDAnative
+import Base: haskey, insert!
 
 # This benchmark defines a kernel that constructs a binary search
 # tree for a set of numbers and then proceeds to test membership
@@ -137,14 +138,16 @@ function kernel(a::CUDAnative.DevicePtr{Int64}, b::CUDAnative.DevicePtr{Int64})
     return
 end
 
-function benchmark()
+end
+
+function bintree_benchmark()
     # Generate a sequence of 64-bit truncated Fibonacci numbers.
-    number_set = fibonacci(Int64, number_count)
+    number_set = BinaryTree.fibonacci(Int64, BinaryTree.number_count)
     # Randomize the sequence's order.
     shuffle!(number_set)
 
     # Generate numbers for which we will test membership in the sequence.
-    test_sequence = Array(1:(thread_count * tests_per_thread))
+    test_sequence = Array(1:(BinaryTree.thread_count * BinaryTree.tests_per_thread))
 
     # Allocate two arrays.
     source_array = Mem.alloc(Int64, length(number_set))
@@ -157,9 +160,9 @@ function benchmark()
     Mem.upload!(destination_array, test_sequence)
 
     # Run the kernel.
-    @cuda_sync threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda_sync threads=BinaryTree.thread_count BinaryTree.kernel(source_pointer, destination_pointer)
 
     @test Mem.download(Int64, destination_array, length(test_sequence)) == ([Int64(x in number_set) for x in test_sequence])
 end
 
-@cuda_benchmark benchmark()
+@cuda_benchmark "binary-tree" bintree_benchmark()

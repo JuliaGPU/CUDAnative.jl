@@ -1,6 +1,6 @@
-using CUDAdrv, CUDAnative, StaticArrays
+module Arrays
 
-include("utils.jl")
+using CUDAdrv, CUDAnative, StaticArrays
 
 # This benchmark allocates a variety of differently-sized arrays.
 # The point of this benchmark is to ascertain how well the GC handles
@@ -43,9 +43,11 @@ function kernel()
     return
 end
 
-function benchmark()
-    # Run the kernel.
-    @cuda_sync threads=thread_count kernel()
 end
 
-@cuda_benchmark benchmark()
+function arrays_benchmark()
+    # Run the kernel.
+    @cuda_sync threads=Arrays.thread_count Arrays.kernel()
+end
+
+@cuda_benchmark "arrays" arrays_benchmark()

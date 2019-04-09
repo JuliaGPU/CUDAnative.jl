@@ -1,6 +1,12 @@
 import BenchmarkTools
 
-use_gc = true
+function should_use_gc()
+    try
+        return use_gc
+    catch ex
+        return true
+    end
+end
 
 const MiB = 1 << 20
 const CU_LIMIT_MALLOC_HEAP_SIZE = 0x02
@@ -34,21 +40,34 @@ macro sync(ex)
 end
 
 macro cuda_sync(args...)
-    if use_gc
-        esc(quote
+    esc(quote
+        if should_use_gc()
             CUDAnative.@cuda_gc $(args...)
-        end)
-    else
-        esc(quote
+        else
             @sync CUDAnative.@cuda $(args...)
-        end)
-    end
+        end
+    end)
 end
 
-macro cuda_benchmark(ex)
+suite = BenchmarkTools.BenchmarkGroup()
+
+function register_cuda_benchmark(f, name)
+    suite[name] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1
+end
+
+macro cuda_benchmark(name, ex)
     esc(quote
-        local stats = BenchmarkTools.@benchmark $(ex) setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $(ex)) teardown=(device_reset!()) evals=1
-        println(length(stats))
-        println(stats)
+        register_cuda_benchmark($name * "-gc") do
+            global use_gc = true
+            $(ex)
+        end
+        register_cuda_benchmark($name * "-nogc") do
+            global use_gc = false
+            $(ex)
+        end
     end)
+end
+
+function run_benchmarks()
+    BenchmarkTools.run(suite)
 end
