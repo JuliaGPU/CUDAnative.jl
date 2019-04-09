@@ -1,4 +1,4 @@
-# This benchmark defines a sea-of-nodes SSA IR, creates a basic
+# This benchmark defines a simple SSA IR, creates a basic
 # block on the GPU and applies the constant folding optimization
 # to it.
 
