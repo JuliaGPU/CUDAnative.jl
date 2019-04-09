@@ -165,4 +165,4 @@ function bintree_benchmark()
     @test Mem.download(Int64, destination_array, length(test_sequence)) == ([Int64(x in number_set) for x in test_sequence])
 end
 
-@cuda_benchmark "binary-tree" bintree_benchmark()
+@cuda_benchmark "binary tree" bintree_benchmark()

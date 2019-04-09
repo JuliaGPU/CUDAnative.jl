@@ -79,4 +79,4 @@ function linkedlist_benchmark()
     @test Mem.download(Int64, destination_array, LinkedList.thread_count) == repeat([sum(1:LinkedList.element_count)], LinkedList.thread_count)
 end
 
-@cuda_benchmark "linked-list" linkedlist_benchmark()
+@cuda_benchmark "linked list" linkedlist_benchmark()

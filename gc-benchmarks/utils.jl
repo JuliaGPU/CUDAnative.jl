@@ -51,17 +51,18 @@ end
 
 suite = BenchmarkTools.BenchmarkGroup()
 
-function register_cuda_benchmark(f, name)
-    suite[name] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1
+function register_cuda_benchmark(f, name, config)
+    suite[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1 seconds=90
 end
 
 macro cuda_benchmark(name, ex)
     esc(quote
-        register_cuda_benchmark($name * "-gc") do
+        suite[$name] = BenchmarkTools.BenchmarkGroup(["gc", "nogc"])
+        register_cuda_benchmark($name, "gc") do
             global use_gc = true
             $(ex)
         end
-        register_cuda_benchmark($name * "-nogc") do
+        register_cuda_benchmark($name, "nogc") do
             global use_gc = false
             $(ex)
         end

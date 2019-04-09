@@ -97,4 +97,4 @@ function ssaopt_benchmark()
     @cuda_sync threads=SSAOpt.thread_count SSAOpt.kernel()
 end
 
-@cuda_benchmark "ssa-opt" ssaopt_benchmark()
+@cuda_benchmark "ssa opt" ssaopt_benchmark()
