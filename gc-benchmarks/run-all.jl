@@ -1,4 +1,4 @@
-using CUDAdrv, CUDAnative
+using CUDAdrv, CUDAnative, Test
 
 include("utils.jl")
 
@@ -7,6 +7,8 @@ include("binary-tree.jl")
 include("linked-list.jl")
 include("matrix.jl")
 include("ssa-opt.jl")
+include("stream-queries.jl")
+include("genetic-algorithm.jl")
 
 results = run_benchmarks()
 # Print the results to the terminal.

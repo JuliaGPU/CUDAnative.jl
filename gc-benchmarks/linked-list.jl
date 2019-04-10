@@ -1,8 +1,7 @@
 module LinkedList
 
 using CUDAnative, CUDAdrv
-using Test
-import Base: foldl, reduce, sum
+import Base: foldl, reduce, sum, max, map, reverse, filter
 
 # This benchmark constructs a linked list in a GPU kernel.
 # In doing so, it stresses the allocator's ability to quickly
@@ -47,6 +46,44 @@ end
 
 function sum(list::List{T}) where T
     reduce(+, list; init=zero(T))
+end
+
+function map_reverse(f::Function, list::List{T})::List{T} where T
+    foldl(list; init=Nil{T}()) do accumulator, value
+        Cons{T}(f(value), accumulator)
+    end
+end
+
+function reverse(list::List{T})::List{T} where T
+    map_reverse(x -> x, list)
+end
+
+function map(f::Function, list::List{T})::List{T} where T
+    reverse(map_reverse(f, list))
+end
+
+function max(evaluate::Function, list::List{T}, default_value::T)::T where T
+    foldl(list; init=default_value) do max_elem, elem
+        if evaluate(max_elem) < evaluate(elem)
+            elem
+        else
+            max_elem
+        end
+    end
+end
+
+function filter_reverse(f::Function, list::List{T})::List{T} where T
+    foldl(list; init=Nil{T}()) do accumulator, value
+        if f(value)
+            Cons{T}(value, accumulator)
+        else
+            accumulator
+        end
+    end
+end
+
+function filter(f::Function, list::List{T})::List{T} where T
+    reverse(filter_reverse(f, list))
 end
 
 const element_count = 1000
