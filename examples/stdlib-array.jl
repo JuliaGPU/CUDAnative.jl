@@ -1,4 +1,4 @@
-using CUDAdrv, CUDAnative, StaticArrays, InteractiveUtils
+using CUDAdrv, CUDAnative, StaticArrays
 
 # This example allocates an array in a GPU kernel.
 
@@ -12,6 +12,8 @@ end
 function kernel()
     array = [1, 2, 3, 4, 5, 6, 7]
     escape(array)
+    comp = [i * i for i in array]
+    escape(comp)
     return
 end
 
