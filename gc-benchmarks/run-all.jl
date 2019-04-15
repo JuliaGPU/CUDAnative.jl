@@ -2,11 +2,11 @@ using CUDAdrv, CUDAnative, Test
 
 include("utils.jl")
 
-include("arrays.jl")
 include("binary-tree.jl")
 include("linked-list.jl")
 include("matrix.jl")
 include("ssa-opt.jl")
+include("static-arrays.jl")
 include("stream-queries.jl")
 include("genetic-algorithm.jl")
 

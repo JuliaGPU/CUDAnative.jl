@@ -2,7 +2,7 @@ module Arrays
 
 using CUDAdrv, CUDAnative, StaticArrays
 
-# This benchmark allocates a variety of differently-sized arrays.
+# This benchmark allocates a variety of differently-sized static arrays.
 # The point of this benchmark is to ascertain how well the GC handles
 # many differently-sized objects.
 
@@ -50,4 +50,4 @@ function arrays_benchmark()
     @cuda_sync threads=Arrays.thread_count Arrays.kernel()
 end
 
-@cuda_benchmark "arrays" arrays_benchmark()
+@cuda_benchmark "static arrays" arrays_benchmark()
