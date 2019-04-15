@@ -10,11 +10,6 @@ import ..CUDArandom: LinearCongruentialGenerator, next
 const thread_count = 64
 const insertion_count = 80
 
-@noinline function escape(value)
-    Base.pointer_from_objref(value)
-    value
-end
-
 function insert(target::Array{Any, 1}, generator::LinearCongruentialGenerator)
     while true
         index = next(generator, 1, length(target))
