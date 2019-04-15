@@ -21,8 +21,10 @@ function insert(target::Array{Any, 1}, generator::LinearCongruentialGenerator)
         elem = target[index]
         if isa(elem, Array{Any, 1})
             if length(elem) > 0
-                target = elem
-                continue
+                if next(generator, 0, 2) == 0
+                    target = elem
+                    continue
+                end
             end
         end
 
