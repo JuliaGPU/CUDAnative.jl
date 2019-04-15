@@ -5,6 +5,7 @@ function check_method(job::CompilerJob)
 
     # get the method
     ms = Base.methods(job.f, job.tt)
+
     isempty(ms)   && throw(KernelError(job, "no method found"))
     length(ms)!=1 && throw(KernelError(job, "no unique matching method"))
     m = first(ms)
@@ -20,8 +21,48 @@ function check_method(job::CompilerJob)
         end
     end
 
+    IRValidator.validate(job)
+
     return
 end
+
+# Typed IR validator
+module IRValidator
+    using TypedCodeUtils
+    import TypedCodeUtils: reflect, filter, lookthrough,
+                           DefaultConsumer, Reflection, Callsite,
+                           identify_invoke, identify_call,
+                           process_invoke, process_call
+
+    function validate(job)
+        # TODO: we need the world we are doing this for
+        params = TypedCodeUtils.current_params()
+        ref = reflect(job.f, job.tt, params=params)
+
+        worklist = Reflection[ref]
+        while !isempty(worklist)
+            ref = pop!(worklist)
+            invokes = filter((c)->lookthrough(identify_invoke, c), ref.CI.code)
+            calls   = filter((c)->lookthrough(identify_call,   c), ref.CI.code)
+            invokes = map((arg) -> process_invoke(DefaultConsumer(), ref, arg...), invokes)
+            calls   = map((arg) -> process_call(  DefaultConsumer(), ref, arg...), calls)
+
+            callsites = append!(collect(invokes), calls)
+            for callsite in callsites
+                if TypedCodeUtils.canreflect(callsite)
+                    # TODO: Actually check that these are `:invoke` we might have gotten to clever
+                    push!(worklist, reflect(callsite))
+                elseif callsite.callinfo isa TypedCodeUtils.BuiltinCallInfo
+                    continue
+                else
+                    @warn "Found non-static call" callsite job
+                end
+            end
+        end
+    end
+end
+
+
 
 if VERSION < v"1.1.0-DEV.593"
     fieldtypes(dt::DataType) = ntuple(i->fieldtype(dt, i), fieldcount(dt))

@@ -12,6 +12,8 @@ using DataStructures
 using Pkg
 using Libdl
 
+using TypedCodeUtils
+
 const ext = joinpath(@__DIR__, "..", "deps", "ext.jl")
 isfile(ext) || error("CUDAnative.jl has not been built, please run Pkg.build(\"CUDAnative\").")
 include(ext)
