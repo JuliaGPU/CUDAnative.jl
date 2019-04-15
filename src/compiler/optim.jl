@@ -73,10 +73,12 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
             if job.gc
                 add!(pm, FunctionPass("InsertSafepointsGPUGC", fun -> insert_safepoints_gpugc!(fun, entry)))
                 add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
-                add!(pm, FunctionPass("LowerArrays", lower_array_calls!))
+                add!(pm, FunctionPass("LowerArraysGPUGC", lower_array_calls_gc!))
             else
                 add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
+                add!(pm, FunctionPass("LowerArraysNoGC", lower_array_calls_nogc!))
             end
+            
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
 
@@ -521,14 +523,14 @@ end
 
 # Emits instructions that allocate a particular number of bytes
 # of GC-managed memory. No headroom is included. No tags are set.
-function new_bytes!(builder::LLVM.Builder, size)
-    call!(builder, Runtime.get(:gc_malloc_object), [size])
+function new_bytes!(builder::LLVM.Builder, malloc, size)
+    call!(builder, malloc, [size])
 end
 
 # Emits instructions that allocate bytes for an object, including
 # headroom for the object's tag. Also fills in the object's tag if
 # one is provided.
-function new_object!(builder::LLVM.Builder, size, tag::Union{Type, Nothing} = nothing)
+function new_object!(builder::LLVM.Builder, malloc, size, tag::Union{Type, Nothing} = nothing)
     # We need to reserve a single pointer of headroom for the tag.
     # (LateLowerGCFrame depends on us doing that.)
     headroom = Runtime.tag_size
@@ -536,7 +538,7 @@ function new_object!(builder::LLVM.Builder, size, tag::Union{Type, Nothing} = no
     # Call the allocation function and bump the resulting pointer
     # so the headroom sits just in front of the returned pointer.
     total_size = add!(builder, size, ConstantInt(Int32(headroom), JuliaContext()))
-    obj_ptr = new_bytes!(builder, total_size)
+    obj_ptr = new_bytes!(builder, malloc, total_size)
 
     jl_value_t = llvmtype(obj_ptr)
     T_bitcast = LLVM.PointerType(jl_value_t, LLVM.addrspace(jl_value_t))
@@ -585,7 +587,7 @@ function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
         # so the headroom sits just in front of the returned pointer.
         let builder = Builder(JuliaContext())
             position!(builder, call)
-            result_ptr = new_object!(builder, size)
+            result_ptr = new_object!(builder, Runtime.get(:gc_malloc_object), size)
             replace_uses!(call, result_ptr)
             unsafe_delete!(LLVM.parent(call), call)
             dispose(builder)
@@ -793,7 +795,7 @@ end
 # Emits instructions that create a new array. The array's element type
 # must be statically known. Its dimensions are represented as a tuple
 # of LLVM IR values. A pointer to the new array is returned.
-function new_array!(builder::LLVM.Builder, array_type::Type, dims::Tuple)
+function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple)
     # Since time immemorial, the structure of an array is (quoting from the
     # Julia source code here):
     #
@@ -871,7 +873,7 @@ function new_array!(builder::LLVM.Builder, array_type::Type, dims::Tuple)
     # Actually allocate the array's contents. We will just always
     # use a separate buffer. Inline data storage is wasteful and
     # harder to implement.
-    data_ptr = new_bytes!(builder, data_bytesize)
+    data_ptr = new_bytes!(builder, malloc, data_bytesize)
 
     # The pointer to the array's data is the first field of the struct.
     push!(fields, data_ptr)
@@ -928,6 +930,7 @@ function new_array!(builder::LLVM.Builder, array_type::Type, dims::Tuple)
     # to the control structure.
     obj_ptr = new_object!(
         builder,
+        malloc,
         ConstantInt(convert(LLVMType, Csize_t), sizeof(layout, struct_type)),
         array_type)
     struct_ptr = bitcast!(
@@ -948,7 +951,7 @@ function new_array!(builder::LLVM.Builder, array_type::Type, dims::Tuple)
 end
 
 # Lowers function calls that pertain to array operations.
-function lower_array_calls!(fun::LLVM.Function)
+function lower_array_calls!(fun::LLVM.Function, malloc)
     changed_any = false
     visit_literal_pointer_calls(fun) do call, name
         if name == :jl_alloc_array_1d
@@ -960,7 +963,7 @@ function lower_array_calls!(fun::LLVM.Function)
                 array_type = unsafe_pointer_to_objref(array_type_ptr)
                 let builder = Builder(JuliaContext())
                     position!(builder, call)
-                    new_array = new_array!(builder, array_type, (args[2],))
+                    new_array = new_array!(builder, malloc, array_type, (args[2],))
                     replace_uses!(call, new_array)
                     unsafe_delete!(LLVM.parent(call), call)
                     dispose(builder)
@@ -970,6 +973,14 @@ function lower_array_calls!(fun::LLVM.Function)
         end
     end
     return changed_any
+end
+
+function lower_array_calls_gc!(fun::LLVM.Function)
+    lower_array_calls!(fun, Runtime.get(:gc_malloc_object))
+end
+
+function lower_array_calls_nogc!(fun::LLVM.Function)
+    lower_array_calls!(fun, Runtime.get(:gc_pool_alloc))
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.
