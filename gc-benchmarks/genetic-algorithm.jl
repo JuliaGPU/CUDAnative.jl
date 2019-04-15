@@ -6,6 +6,7 @@ module GeneticAlgorithm
 
 using CUDAnative, CUDAdrv
 import ..LinkedList: List, Nil, Cons, foldl, map, max
+import ..CUDArandom: LinearCongruentialGenerator, next
 
 # A character in our genetic algorithm, based loosely on Fallout's SPECIAL system.
 mutable struct Character
@@ -16,28 +17,6 @@ mutable struct Character
     intelligence::Int
     agility::Int
     luck::Int
-end
-
-# A linear congruential pseudo-random number generator.
-mutable struct LinearCongruentialGenerator
-    modulus::Int
-    a::Int
-    c::Int
-    state::Int
-end
-
-LinearCongruentialGenerator(seed::Int) = LinearCongruentialGenerator(1 << 32, 1664525, 1013904223, seed)
-
-# Requests a pseudo-random number.
-function next(generator::LinearCongruentialGenerator)::Int
-    generator.state = (generator.a * generator.state + generator.c) % generator.modulus
-    generator.state
-end
-
-# Requests a pseudo-random number that is at least as great as `lower`
-# and less than `upper`.
-function next(generator::LinearCongruentialGenerator, lower::Int, upper::Int)::Int
-    lower + next(generator) % (upper - lower)
 end
 
 # Computes the mean of two integers.

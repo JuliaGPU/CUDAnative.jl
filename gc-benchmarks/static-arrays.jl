@@ -1,4 +1,4 @@
-module Arrays
+module StaticArraysBench
 
 using CUDAdrv, CUDAnative, StaticArrays
 
@@ -45,9 +45,9 @@ end
 
 end
 
-function arrays_benchmark()
+function static_arrays_benchmark()
     # Run the kernel.
-    @cuda_sync threads=Arrays.thread_count Arrays.kernel()
+    @cuda_sync threads=StaticArraysBench.thread_count StaticArraysBench.kernel()
 end
 
-@cuda_benchmark "static arrays" arrays_benchmark()
+@cuda_benchmark "static arrays" static_arrays_benchmark()
