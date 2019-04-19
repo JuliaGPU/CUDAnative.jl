@@ -9,7 +9,7 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # the code it generates, or the execution
 function split_kwargs(kwargs)
     macro_kws    = [:dynamic]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name, :malloc]
     call_kws     = [:cooperative, :blocks, :threads, :config, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
