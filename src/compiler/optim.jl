@@ -871,6 +871,12 @@ function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple
         LLVM.ConstantInt(convert(LLVMType, Csize_t), element_size),
         element_count)
 
+    if element_size == Csize_t(1) && length(dims) == 1
+        # If we're allocating an array of bytes, we will throw in an extra
+        # byte at the end for compatibility with Julia's ABI.
+        data_bytesize = add!(builder, data_bytesize, LLVM.ConstantInt(convert(LLVMType, Csize_t), 1))
+    end
+
     # Actually allocate the array's contents. We will just always
     # use a separate buffer. Inline data storage is wasteful and
     # harder to implement.
@@ -904,6 +910,9 @@ function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple
     flags |= Int16(true)
     # Add the flags to the `jl_array_t` struct.
     push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), flags))
+
+    # Set the 'elsize' field.
+    push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), Int16(element_size)))
 
     # Set the 'offset' field to zero (the array is not a slice).
     push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), Int16(0)))
@@ -955,8 +964,8 @@ end
 function lower_array_calls!(fun::LLVM.Function, malloc)
     changed_any = false
     visit_literal_pointer_calls(fun) do call, name
+        args = collect(operands(call))[1:end - 1]
         if name == :jl_alloc_array_1d
-            args = collect(operands(call))[1:end - 1]
             is_ptr, array_type_ptr = to_literal_pointer(args[1])
             if is_ptr
                 # We can lower array creation calls if we know the type
@@ -971,6 +980,14 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 end
             end
             changed_any = true
+        elseif name == :jl_array_grow_end
+            let builder = Builder(JuliaContext())
+                position!(builder, call)
+                new_call = call!(builder, Runtime.get(name), args)
+                replace_uses!(call, new_call)
+                unsafe_delete!(LLVM.parent(call), call)
+                dispose(builder)
+            end
         end
     end
     return changed_any
@@ -986,7 +1003,7 @@ end
 
 # Replaces all uses of a function in a particular module with
 # a compatible function.
-function replace_function!(mod::LLVM.Module, old_name::String, new_name::String; include_oom_check=false)
+function replace_function!(mod::LLVM.Module, old_name::String, new_name::String)
     if new_name == old_name
         # There's nothing to replace if the new function is the same as
         # the old function.
@@ -1012,26 +1029,6 @@ function replace_function!(mod::LLVM.Module, old_name::String, new_name::String;
             eltype(llvmtype(old_function)::LLVM.PointerType)::LLVM.FunctionType)
     end
 
-    if include_oom_check
-        wrapper = LLVM.Function(
-            mod,
-            new_name * "_checked",
-            eltype(llvmtype(new_function)::LLVM.PointerType)::LLVM.FunctionType)
-
-        Builder(JuliaContext()) do builder
-            entry = BasicBlock(wrapper, "entry", JuliaContext())
-            position!(builder, entry)
-
-            result = call!(builder, new_function, collect(parameters(wrapper)))
-            check_args = LLVM.Value[result]
-            append!(check_args, parameters(wrapper))
-            call!(builder, Runtime.get(:check_out_of_memory), check_args)
-            ret!(builder, result)
-        end
-
-        new_function = wrapper
-    end
-
     # Replace all uses of the old function with the new function.
     replace_uses!(old_function, new_function)
 
@@ -1041,14 +1038,7 @@ end
 # Replaces all uses of the malloc function in a particular module with
 # a compatible function with the specified name.
 function replace_malloc!(mod::LLVM.Module, malloc_name::String)
-    if malloc_name == "malloc"
-        # There's nothing to replace if the new malloc is the same as
-        # the old malloc.
-        return false
-    end
-
-    return replace_function!(mod, "malloc", malloc_name) ||
-        replace_function!(mod, "ptx_gc_pool_alloc", malloc_name; include_oom_check=true)
+    return replace_function!(mod, "malloc", malloc_name)
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.

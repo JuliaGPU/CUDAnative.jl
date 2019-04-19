@@ -129,20 +129,14 @@ end
 
 function gc_pool_alloc(sz::Csize_t)
     ptr = malloc(sz)
-    check_out_of_memory(ptr, sz)
-    return unsafe_pointer_to_objref(ptr)
-end
-
-function check_out_of_memory(ptr::Ptr{Cvoid}, sz::Csize_t)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
     end
-    return
+    return unsafe_pointer_to_objref(ptr)
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
-compile(check_out_of_memory, Cvoid, (Ptr{Cvoid}, Csize_t))
 
 ## boxing and unboxing
 
@@ -230,6 +224,8 @@ for (T, t) in [Int8   => :int8,  Int16  => :int16,  Int32  => :int32,  Int64  =>
     end
 end
 
+## Garbage collection
+
 # LLVM type of a pointer to a tracked pointer
 function T_pprjlvalue()
     T_pjlvalue = convert(LLVMType, Any, true)
@@ -237,7 +233,8 @@ function T_pprjlvalue()
         LLVM.PointerType(eltype(T_pjlvalue), Tracked))
 end
 
-# Include the GC memory allocation function into the runtime.
+# Include GC memory allocation functions into the runtime.
+compile(CUDAnative.gc_malloc, Ptr{UInt8}, (Csize_t,))
 compile(CUDAnative.gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
 
 # Include GC frame management functions into the runtime.
@@ -260,5 +257,138 @@ compile(
 # Also import the safepoint and perma-safepoint functions.
 compile(CUDAnative.gc_safepoint, Cvoid, ())
 compile(CUDAnative.gc_perma_safepoint, Cvoid, ())
+
+## Arrays
+
+# A data structure that carefully mirrors an in-memory array control
+# structure for Julia arrays, as laid out by the compiler.
+mutable struct Array1D
+    # This is the data layout for Julia arrays, which we adhere to here.
+    # 
+    #     JL_EXTENSION typedef struct {
+    #       JL_DATA_TYPE
+    #       void *data;
+    #     #ifdef STORE_ARRAY_LEN
+    #       size_t length;
+    #     #endif
+    #       jl_array_flags_t flags;
+    #       uint16_t elsize;
+    #       uint32_t offset;  // for 1-d only. does not need to get big.
+    #       size_t nrows;
+    #       union {
+    #           // 1d
+    #           size_t maxsize;
+    #           // Nd
+    #           size_t ncols;
+    #       };
+    #       // other dim sizes go here for ndims > 2
+    #
+    #       // followed by alignment padding and inline data, or owner pointer
+    #     } jl_array_t;
+
+    data::Ptr{UInt8}
+    length::Csize_t
+    flags::UInt16
+    elsize::UInt16
+    offset::UInt32
+    nrows::Csize_t
+    maxsize::Csize_t
+end
+
+function zero_fill!(ptr::Ptr{UInt8}, count::Integer)
+    for i in 1:count
+        unsafe_store!(ptr, UInt8(0), count)
+    end
+    return
+end
+
+function memmove!(dst::Ptr{UInt8}, src::Ptr{UInt8}, sz::Integer)
+    if src < dst
+        for i in 1:sz
+            unsafe_store!(dst, unsafe_load(src, i), i)
+        end
+    else
+        for i in sz:-1:1
+            unsafe_store!(dst, unsafe_load(src, i), i)
+        end
+    end
+end
+
+# Resize the buffer to a max size of `newlen`
+# The buffer can either be newly allocated or realloc'd, the return
+# value is true if a new buffer is allocated and false if it is realloc'd.
+# the caller needs to take care of moving the data from the old buffer
+# to the new one if necessary.
+# When this function returns, the `.data` pointer always points to
+# the **beginning** of the new buffer.
+function array_resize_buffer(a::Array1D, newlen::Csize_t)::Bool
+    elsz = Csize_t(a.elsize)
+    nbytes = newlen * elsz
+    oldnbytes = a.maxsize * elsz
+
+    if elsz == 1
+        nbytes += 1
+        oldnbytes += 1
+    end
+
+    # Allocate a new buffer. Note that 'malloc' will get replaced with
+    # the "right" allocation function for the environment in which this
+    # function is compiled. So if the GC is enabled, then 'malloc' will
+    # actually call 'gc_malloc'.
+    a.data = malloc(nbytes)
+    zero_fill!(a.data + oldnbytes, nbytes - oldnbytes)
+    a.maxsize = newlen
+    return true
+end
+
+function jl_array_grow_at_end(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
+    data = a.data
+    elsz = Csize_t(a.elsize)
+    reqmaxsize = a.offset + n + inc
+    has_gap = n > idx
+    if reqmaxsize > a.maxsize
+        nb1 = idx * elsz
+        nbinc = inc * elsz
+
+        if reqmaxsize < 4
+            newmaxsize = Csize_t(4)
+        elseif reqmaxsize >= a.maxsize * 2
+            newmaxsize = reqmaxsize
+        else
+            newmaxsize = a.maxsize * 2
+        end
+
+        newbuf = array_resize_buffer(a, newmaxsize)
+        newdata = a.data + a.offset * elsz
+        if newbuf
+            memmove!(newdata, data, nb1)
+            if has_gap
+                memmove!(newdata + nb1 + nbinc, data + nb1, n * elsz - nb1)
+            end
+        elseif has_gap
+            memmove!(newdata + nb1 + nbinc, newdata + nb1, n * elsz - nb1)
+        end
+        a.data = data = newdata
+    end
+
+    newnrows = n + inc
+    a.length = newnrows
+    a.nrows = newnrows
+    zero_fill!(data + idx * elsz, inc * elsz)
+    return
+end
+
+function jl_array_grow_end(a::Array1D, inc::Csize_t)
+    n = a.nrows
+    jl_array_grow_at_end(a, n, inc, n)
+    return
+end
+
+compile(
+    jl_array_grow_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
 
 end
