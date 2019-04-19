@@ -79,6 +79,12 @@ function data_pointer(record::Ptr{FreeListRecord})::Ptr{UInt8}
     Base.unsafe_convert(Ptr{UInt8}, record) + sizeof(FreeListRecord)
 end
 
+# Takes a pointer to the first byte of data managed by an allocation record
+# and produces a pointer to the record itself.
+function record_pointer(data::Ptr{UInt8})::Ptr{FreeListRecord}
+    Base.unsafe_convert(Ptr{FreeListRecord}, record) - sizeof(FreeListRecord)
+end
+
 # Gets a pointer to the first byte of data no longer managed by an allocation record.
 function data_end_pointer(record::Ptr{FreeListRecord})::Ptr{UInt8}
     data_pointer(record) + unsafe_load(@get_field_pointer(record, :size))
@@ -753,7 +759,7 @@ function gc_take_any_list_entry(
         free_list_item = unsafe_load(free_list_ptr)
 
         if free_list_item == C_NULL
-            break
+            return C_NULL
         end
 
         result = gc_take_list_entry(free_list_ptr, free_list_item, bytesize)
@@ -763,7 +769,6 @@ function gc_take_any_list_entry(
 
         free_list_ptr = @get_field_pointer(free_list_item, :next)::Ptr{Ptr{FreeListRecord}}
     end
-    return C_NULL
 end
 
 # Tries to allocate a chunk of memory from a free list.
@@ -948,11 +953,17 @@ function gc_transfer_and_malloc(
     transfer_bytesize::Csize_t,
     alloc_bytesize::Csize_t)::Ptr{UInt8}
 
-    gc_transfer_and_malloc(
+    result = gc_transfer_and_malloc(
         from_arena,
         get_free_list(to_arena),
         transfer_bytesize,
         alloc_bytesize)
+
+    writer_locked(get_lock(to_arena)) do
+        unsafe_store!(@get_field_pointer(to_arena, :can_restock), true)
+    end
+
+    return result
 end
 
 """
@@ -1439,10 +1450,9 @@ function iterate_allocated(fun::Function, arena::Ptr{FreeListArena})
     iterate_allocation_records(fun, allocation_list_head)
 end
 
-# Iterates through all active allocation records in a GC arena.
-function iterate_allocated(fun::Function, arena::Ptr{BodegaArena})
-    # Compose a set that contains all data addresses of chunks that
-    # are on the shelves.
+# Composes a set that contains all data addresses of chunks that
+# are on the shelves.
+function chunks_on_shelves(arena::Ptr{BodegaArena})
     arena_data = unsafe_load(arena)
     chunks_on_shelves = Set{Ptr{UInt8}}()
     for i in 1:arena_data.shelf_count
@@ -1451,11 +1461,17 @@ function iterate_allocated(fun::Function, arena::Ptr{BodegaArena})
             push!(chunks_on_shelves, unsafe_load(shelf.chunks, j))
         end
     end
+    return chunks_on_shelves
+end
+
+# Iterates through all active allocation records in a GC arena.
+function iterate_allocated(fun::Function, arena::Ptr{BodegaArena})
+    shelf_chunks = chunks_on_shelves(arena)
 
     # Now iterate through the allocation list, ignoring records that have
     # been placed on the shelves.
     iterate_allocated(get_free_list(arena)) do record
-        if !(data_pointer(record) in chunks_on_shelves)
+        if !(data_pointer(record) in shelf_chunks)
             fun(record)
         end
     end
@@ -1504,8 +1520,15 @@ end
 
 # Frees all dead blocks in an arena.
 function gc_free_garbage(arena::Ptr{BodegaArena}, live_blocks::Set{Ptr{FreeListRecord}})
+    # Mark chunks on shelves as live.
+    all_live_blocks = Set{Ptr{FreeListRecord}}(live_blocks)
+    shelf_chunks = chunks_on_shelves(arena)
+    for chunk_ptr in shelf_chunks
+        push!(all_live_blocks, record_pointer(chunk_ptr))
+    end
+
     # Free garbage in the free list sub-arena.
-    gc_free_garbage(get_free_list(arena), live_blocks)
+    gc_free_garbage(get_free_list(arena), all_live_blocks)
 
     # Mark the arena as ready for restocking.
     unsafe_store!(@get_field_pointer(arena, :can_restock), true)
@@ -1850,7 +1873,7 @@ macro cuda_gc(ex...)
                     # Standard kernel setup logic.
                     local kernel_args = CUDAnative.cudaconvert.(($(var_exprs...),))
                     local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
-                    local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; gc = true, $(map(esc, compiler_kwargs)...))
+                    local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; gc = true, malloc="ptx_gc_malloc", $(map(esc, compiler_kwargs)...))
                     CUDAnative.prepare_kernel(kernel; init=kernel_init, $(map(esc, env_kwargs)...))
                     gc_report.elapsed_time = Base.@elapsed begin
                         kernel(kernel_args...; $(map(esc, call_kwargs)...))
