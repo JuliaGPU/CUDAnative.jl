@@ -12,6 +12,11 @@ struct CompilerJob
     maxthreads::Union{Nothing,CuDim}
     blocks_per_sm::Union{Nothing,Integer}
     maxregs::Union{Nothing,Integer}
+    # The name of the 'malloc' function to use when allocating memory.
+    # A transform will rewrite all calls to 'malloc' to use this function
+    # instead. The 'malloc' signature must be 'void* malloc(size_t)' or
+    # compatible.
+    malloc::String
     # Indicates whether the GPU GC or the "malloc never free"
     # GC intrinsic lowering strategy is to be used. The former
     # is used when this field is `true`; the latter when it is
@@ -21,8 +26,8 @@ struct CompilerJob
     CompilerJob(f, tt, cap, kernel;
                     minthreads=nothing, maxthreads=nothing,
                     blocks_per_sm=nothing, maxregs=nothing,
-                    gc=false) =
-        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs, gc)
+                    malloc="malloc",gc=false) =
+        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs, malloc, gc)
 end
 
 # global job reference
