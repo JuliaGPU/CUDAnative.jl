@@ -68,7 +68,7 @@ function codegen(target::Symbol, job::CompilerJob; libraries::Bool=true,
     # preload libraries
     if libraries
         libdevice = load_libdevice(job.cap)
-        runtime = load_runtime(job.cap)
+        runtime = load_runtime(job.cap, job.malloc)
     end
 
     need_library(lib) = any(f -> isdeclaration(f) &&
