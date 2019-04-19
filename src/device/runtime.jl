@@ -129,15 +129,20 @@ end
 
 function gc_pool_alloc(sz::Csize_t)
     ptr = malloc(sz)
+    check_out_of_memory(ptr, sz)
+    return unsafe_pointer_to_objref(ptr)
+end
+
+function check_out_of_memory(ptr::Ptr{Cvoid}, sz::Csize_t)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
     end
-    return unsafe_pointer_to_objref(ptr)
+    return
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
-
+compile(check_out_of_memory, Cvoid, (Ptr{Cvoid}, Csize_t))
 
 ## boxing and unboxing
 

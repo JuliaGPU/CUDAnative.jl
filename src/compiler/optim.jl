@@ -78,7 +78,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
                 add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
                 add!(pm, FunctionPass("LowerArraysNoGC", lower_array_calls_nogc!))
             end
-            
+
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
 
@@ -89,6 +89,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
 
             run!(pm, mod)
         end
+        replace_malloc!(mod, job.malloc)
     end
 
     # PTX-specific optimizations
@@ -981,6 +982,73 @@ end
 
 function lower_array_calls_nogc!(fun::LLVM.Function)
     lower_array_calls!(fun, Runtime.get(:gc_pool_alloc))
+end
+
+# Replaces all uses of a function in a particular module with
+# a compatible function.
+function replace_function!(mod::LLVM.Module, old_name::String, new_name::String; include_oom_check=false)
+    if new_name == old_name
+        # There's nothing to replace if the new function is the same as
+        # the old function.
+        return false
+    end
+
+    # Otherwise, we'll try and find the malloc function.
+    if !haskey(functions(mod), old_name)
+        # If the old function doesn't even appear in the module, then it's not in
+        # use and we can stop right here.
+        return false
+    end
+
+    old_function = functions(mod)[old_name]
+
+    if haskey(functions(mod), new_name)
+        new_function = functions(mod)[new_name]
+    else
+        # Create a new function.
+        new_function = LLVM.Function(
+            mod,
+            new_name,
+            eltype(llvmtype(old_function)::LLVM.PointerType)::LLVM.FunctionType)
+    end
+
+    if include_oom_check
+        wrapper = LLVM.Function(
+            mod,
+            new_name * "_checked",
+            eltype(llvmtype(new_function)::LLVM.PointerType)::LLVM.FunctionType)
+
+        Builder(JuliaContext()) do builder
+            entry = BasicBlock(wrapper, "entry", JuliaContext())
+            position!(builder, entry)
+
+            result = call!(builder, new_function, collect(parameters(wrapper)))
+            check_args = LLVM.Value[result]
+            append!(check_args, parameters(wrapper))
+            call!(builder, Runtime.get(:check_out_of_memory), check_args)
+            ret!(builder, result)
+        end
+
+        new_function = wrapper
+    end
+
+    # Replace all uses of the old function with the new function.
+    replace_uses!(old_function, new_function)
+
+    return true
+end
+
+# Replaces all uses of the malloc function in a particular module with
+# a compatible function with the specified name.
+function replace_malloc!(mod::LLVM.Module, malloc_name::String)
+    if malloc_name == "malloc"
+        # There's nothing to replace if the new malloc is the same as
+        # the old malloc.
+        return false
+    end
+
+    return replace_function!(mod, "malloc", malloc_name) ||
+        replace_function!(mod, "ptx_gc_pool_alloc", malloc_name; include_oom_check=true)
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.
