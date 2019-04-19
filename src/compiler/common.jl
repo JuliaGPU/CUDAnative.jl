@@ -12,10 +12,10 @@ struct CompilerJob
     maxthreads::Union{Nothing,CuDim}
     blocks_per_sm::Union{Nothing,Integer}
     maxregs::Union{Nothing,Integer}
-    # The name of the 'malloc' function to use when allocating memory.
-    # A transform will rewrite all calls to 'malloc' to use this function
-    # instead. The 'malloc' signature must be 'void* malloc(size_t)' or
-    # compatible.
+    # The name of the memory allocation function to use when allocating
+    # managed memory. A transform will rewrite all managed memory allocations
+    # to use this function instead. The 'malloc' signature must be
+    # 'void* malloc(size_t)' or compatible.
     malloc::String
     # Indicates whether the GPU GC or the "malloc never free"
     # GC intrinsic lowering strategy is to be used. The former

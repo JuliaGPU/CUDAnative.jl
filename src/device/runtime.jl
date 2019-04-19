@@ -127,8 +127,18 @@ function T_prjlvalue()
     LLVM.PointerType(eltype(T_pjlvalue), Tracked)
 end
 
+# A function that gets replaced by the proper 'malloc' implementation
+# for the context it executes in. When the GC is used, calls to this
+# function are replaced with 'gc_malloc'; otherwise, this function gets
+# rewritten as a call to the allocator, probably 'malloc'.
+@noinline function managed_malloc(sz::Csize_t)
+    malloc(sz)
+end
+
+compile(managed_malloc, Ptr{UInt8}, (Csize_t,))
+
 function gc_pool_alloc(sz::Csize_t)
-    ptr = malloc(sz)
+    ptr = managed_malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
@@ -331,11 +341,12 @@ function array_resize_buffer(a::Array1D, newlen::Csize_t)::Bool
         oldnbytes += 1
     end
 
-    # Allocate a new buffer. Note that 'malloc' will get replaced with
+    # Allocate a new buffer. 'managed_malloc' will get replaced with
     # the "right" allocation function for the environment in which this
-    # function is compiled. So if the GC is enabled, then 'malloc' will
-    # actually call 'gc_malloc'.
-    a.data = malloc(nbytes)
+    # function is compiled. So if the GC is enabled, then 'managed_malloc'
+    # will actually call 'gc_malloc'; otherwise, it's probably going to
+    # be 'malloc'.
+    a.data = managed_malloc(nbytes)
     zero_fill!(a.data + oldnbytes, nbytes - oldnbytes)
     a.maxsize = newlen
     return true
