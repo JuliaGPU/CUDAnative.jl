@@ -131,14 +131,31 @@ end
 # for the context it executes in. When the GC is used, calls to this
 # function are replaced with 'gc_malloc'; otherwise, this function gets
 # rewritten as a call to the allocator, probably 'malloc'.
-@noinline function managed_malloc(sz::Csize_t)
-    malloc(sz)
+@generated function managed_malloc(sz::Csize_t)
+    T_pint8 = LLVM.PointerType(LLVM.Int8Type(JuliaContext()))
+    T_size = convert(LLVMType, Csize_t)
+    T_ptr = convert(LLVMType, Ptr{UInt8})
+
+    # create function
+    llvm_f, _ = create_function(T_ptr, [T_size])
+    mod = LLVM.parent(llvm_f)
+
+    intr = LLVM.Function(mod, "julia.managed_malloc", LLVM.FunctionType(T_pint8, [T_size]))
+
+    # generate IR
+    Builder(JuliaContext()) do builder
+        entry = BasicBlock(llvm_f, "entry", JuliaContext())
+        position!(builder, entry)
+        ptr = call!(builder, intr, [parameters(llvm_f)[1]])
+        jlptr = ptrtoint!(builder, ptr, T_ptr)
+        ret!(builder, jlptr)
+    end
+
+    call_function(llvm_f, Ptr{UInt8}, Tuple{Csize_t}, :((sz,)))
 end
 
-compile(managed_malloc, Ptr{UInt8}, (Csize_t,))
-
 function gc_pool_alloc(sz::Csize_t)
-    ptr = managed_malloc(sz)
+    ptr = malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())

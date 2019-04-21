@@ -1010,7 +1010,7 @@ function replace_function!(mod::LLVM.Module, old_name::String, new_name::String)
         return false
     end
 
-    # Otherwise, we'll try and find the malloc function.
+    # Otherwise, we'll try and find the old function.
     if !haskey(functions(mod), old_name)
         # If the old function doesn't even appear in the module, then it's not in
         # use and we can stop right here.
@@ -1038,7 +1038,7 @@ end
 # Replaces all uses of the managed memory allocation function in a
 # particular module with a compatible function with the specified name.
 function replace_malloc!(mod::LLVM.Module, malloc_name::String)
-    return replace_function!(mod, "ptx_managed_malloc", malloc_name)
+    return replace_function!(mod, "julia.managed_malloc", malloc_name)
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.
