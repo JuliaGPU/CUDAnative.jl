@@ -147,7 +147,7 @@ tbaa_addrspace(as::Type{<:AddressSpace}) = tbaa_make_child(lowercase(String(as.n
 
         ptr = inttoptr!(builder, parameters(llvm_f)[1], T_actual_ptr)
 
-        ptr = gep!(builder, ptr, [parameters(llvm_f)[2]])
+        ptr = inbounds_gep!(builder, ptr, [parameters(llvm_f)[2]])
         ptr_with_as = addrspacecast!(builder, ptr, LLVM.PointerType(eltyp, convert(Int, A)))
         ld = load!(builder, ptr_with_as)
 
@@ -182,7 +182,7 @@ end
 
         ptr = inttoptr!(builder, parameters(llvm_f)[1], T_actual_ptr)
 
-        ptr = gep!(builder, ptr, [parameters(llvm_f)[3]])
+        ptr = inbounds_gep!(builder, ptr, [parameters(llvm_f)[3]])
         ptr_with_as = addrspacecast!(builder, ptr, LLVM.PointerType(eltyp, convert(Int, A)))
         val = parameters(llvm_f)[2]
         st = store!(builder, val, ptr_with_as)
@@ -260,7 +260,7 @@ const CachedLoadPointers = Union{Tuple(DevicePtr{T,AS.Global}
 
         ptr = inttoptr!(builder, parameters(llvm_f)[1], T_actual_ptr)
 
-        ptr = gep!(builder, ptr, [parameters(llvm_f)[2]])
+        ptr = inbounds_gep!(builder, ptr, [parameters(llvm_f)[2]])
         ptr_with_as = addrspacecast!(builder, ptr, T_actual_ptr_as)
         ld = call!(builder, intrinsic,
                    [ptr_with_as, ConstantInt(Int32(align), JuliaContext())])

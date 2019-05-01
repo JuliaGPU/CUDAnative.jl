@@ -88,7 +88,7 @@ end
         entry = BasicBlock(llvm_f, "entry", JuliaContext())
         position!(builder, entry)
 
-        ptr_with_as = gep!(builder, gv, [ConstantInt(0, JuliaContext()),
+        ptr_with_as = inbounds_gep!(builder, gv, [ConstantInt(0, JuliaContext()),
                                          ConstantInt(0, JuliaContext())])
 
         ptr = addrspacecast!(builder, ptr_with_as, T_actual_ptr)
