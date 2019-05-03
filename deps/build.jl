@@ -142,6 +142,7 @@ function main()
     config[:libcudadevrt] = find_libcudadevrt(toolkit_dirs)
     config[:libcudadevrt] === nothing && build_error("Available CUDA toolchain does not provide libcudadevrt")
     ## optional
+    config[:cuobjdump] = find_cuda_binary("cuobjdump", toolkit_dirs)
     config[:nvdisasm] = find_cuda_binary("nvdisasm", toolkit_dirs)
     config[:ptxas] = find_cuda_binary("ptxas", toolkit_dirs)
 

@@ -103,8 +103,18 @@ function code_sass(io::IO, job::CompilerJob)
     if !job.kernel
         error("Can only generate SASS code for kernel functions")
     end
-    if ptxas === nothing || nvdisasm === nothing
-        error("Your CUDA installation does not provide ptxas or nvdisasm, both of which are required for code_sass")
+
+    # nvdisams on CUDA >= 9.1 fails on the binaries produced by LLVM
+    if nvdisasm === nothing || Base.libllvm_version <= v"6.0.1" && cuda_driver_version >= v"9.1.0"
+        use_nvdisasm = false
+        disasmtool = cuobjdump
+    else
+        use_nvdisasm = true
+        disasmtool = nvdisasm
+    end
+
+    if ptxas === nothing || disasmtool === nothing
+        error("Your CUDA installation does not provide ptxas or nvdisasm/cuobjdump, all of which are required for code_sass")
     end
 
     ptx, _ = codegen(:ptx, job)
@@ -116,16 +126,20 @@ function code_sass(io::IO, job::CompilerJob)
     # TODO: see how `nvvp` extracts SASS code when doing PC sampling, and copy that.
     Base.run(`$ptxas --gpu-name $gpu --output-file $fn --input-as-string $ptx`)
     try
-        cmd = `$nvdisasm --print-code --print-line-info $fn`
-        for line in readlines(cmd)
-            # nvdisasm output is pretty verbose;
-            # perform some clean-up and make it look like @code_native
-            line = replace(line, r"/\*[0-9a-f]{4}\*/" => "        ") # strip inst addr
-            line = replace(line, r"^[ ]{30}" => "   ")               # reduce leading spaces
-            line = replace(line, r"[\s+]//##" => ";")                # change line info tag
-            line = replace(line, r"^\." => "\n.")                    # break before new BBs
-            line = replace(line, r"; File \"(.+?)\", line (\d+)" => s"; Location \1:\2") # rename line info
-            println(io, line)
+        if use_nvdisasm
+            cmd = `$nvdisasm --print-code --print-line-info $fn`
+            for line in readlines(cmd)
+                # nvdisasm output is pretty verbose;
+                # perform some clean-up and make it look like @code_native
+                line = replace(line, r"/\*[0-9a-f]{4}\*/" => "        ") # strip inst addr
+                line = replace(line, r"^[ ]{30}" => "   ")               # reduce leading spaces
+                line = replace(line, r"[\s+]//##" => ";")                # change line info tag
+                line = replace(line, r"^\." => "\n.")                    # break before new BBs
+                line = replace(line, r"; File \"(.+?)\", line (\d+)" => s"; Location \1:\2") # rename line info
+                println(io, line)
+            end
+        else
+            print(io, read(`$cuobjdump --dump-sass $fn`, String))
         end
     finally
         rm(fn)
