@@ -10,7 +10,7 @@ export ReaderWriterLock, reader_locked, writer_locked, Mutex, try_lock, unlock
     lt = string(convert(LLVMType, T))
     ir = """
         %ptr = inttoptr $ptr_type %0 to $lt*
-        %result = cmpxchg volatile $lt* %ptr, $lt %1, $lt %2 seq_cst seq_cst
+        %result = cmpxchg volatile $lt* %ptr, $lt %1, $lt %2 acq_rel acquire
         %rv = extractvalue { $lt, i1 } %result, 0
         ret $lt %rv
         """
@@ -22,7 +22,7 @@ end
     lt = string(convert(LLVMType, T))
     ir = """
         %ptr = inttoptr $ptr_type %0 to $lt*
-        %rv = atomicrmw volatile $(String(op)) $lt* %ptr, $lt %1 seq_cst
+        %rv = atomicrmw volatile $(String(op)) $lt* %ptr, $lt %1 acq_rel
         ret $lt %rv
         """
     :(Core.Intrinsics.llvmcall($ir, $T, Tuple{$(Ptr{T}), $T}, lhs, rhs))
