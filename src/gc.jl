@@ -43,7 +43,7 @@
 #   * When the device runs out of GC memory, it requests an interrupt
 #     to mark and sweep.
 
-export @cuda_gc, gc_malloc, gc_malloc_object, gc_collect, gc_safepoint
+export @cuda_gc, gc_malloc, gc_malloc_object, gc_collect, gc_safepoint, GCConfiguration
 
 import Base: length, show
 import Printf: @sprintf
@@ -1126,30 +1126,6 @@ end
 # One megabyte.
 const MiB = 1 << 20
 
-# The initial size of the GC heap, currently 10 MiB.
-const initial_gc_heap_size = 10 * MiB
-
-# The default capacity of a root buffer, i.e., the max number of
-# roots that can be stored per thread. Currently set to
-# 256 roots. That's 2 KiB of roots per thread.
-const default_root_buffer_capacity = 256
-
-# The point at which the global arena is deemed to be starving, i.e.,
-# it no longer contains enough memory to perform basic allocations.
-# If the global arena's free byte count stays below the arena starvation
-# threshold after a collection phase, the collector will allocate
-# additional memory to the arena such that it is no longer starving.
-# The arena starvation threshold is currently set to 4 MiB.
-const global_arena_starvation_threshold = 4 * MiB
-
-# The point at which a local arena is deemed to be starving, i.e.,
-# it no longer contains enough memory to perform basic allocations.
-# If a local arena's free byte count stays below the arena starvation
-# threshold after a collection phase, the collector will allocate
-# additional memory to the arena such that it is no longer starving.
-# The arena starvation threshold is currently set to 1 MiB.
-const local_arena_starvation_threshold = 1 * MiB
-
 # The point at which a tiny arena is deemed to be starving, i.e.,
 # it no longer contains enough memory to perform basic allocations.
 # If a tiny arena's free byte count stays below the arena starvation
@@ -1178,17 +1154,77 @@ end
 
 GCHeapDescription() = GCHeapDescription([])
 
+# A data structure that contains GC configuration parameters.
+struct GCConfiguration
+    # The number of local arenas to create.
+    local_arena_count::Int
+
+    # The max number of roots that can be stored per thread.
+    root_buffer_capacity::Int
+
+    # The point at which the global arena is deemed to be starving, i.e.,
+    # it no longer contains enough memory to perform basic allocations.
+    # If the global arena's free byte count stays below the arena starvation
+    # threshold after a collection phase, the collector will allocate
+    # additional memory to the arena such that it is no longer starving.
+    global_arena_starvation_threshold::Int
+
+    # The initial size of the global arena, in bytes.
+    global_arena_initial_size::Int
+
+    # The point at which a local arena is deemed to be starving, i.e.,
+    # it no longer contains enough memory to perform basic allocations.
+    # If a local arena's free byte count stays below the arena starvation
+    # threshold after a collection phase, the collector will allocate
+    # additional memory to the arena such that it is no longer starving.
+    local_arena_starvation_threshold::Int
+
+    # The initial size of a local arena, in bytes.
+    local_arena_initial_size::Int
+end
+
+# Creates a GC configuration.
+function GCConfiguration(;
+    local_arena_count::Integer = 8,
+    root_buffer_capacity::Integer = 256,
+    global_arena_starvation_threshold::Integer = 4 * MiB,
+    global_arena_initial_size::Integer = 2 * MiB,
+    local_arena_starvation_threshold::Integer = 1 * MiB,
+    local_arena_initial_size::Integer = 1 * MiB)
+
+    GCConfiguration(
+        local_arena_count,
+        root_buffer_capacity,
+        global_arena_starvation_threshold,
+        global_arena_initial_size,
+        local_arena_starvation_threshold,
+        local_arena_initial_size)
+end
+
+function initial_heap_size(config::GCConfiguration, thread_count::Integer)
+    warp_count = Base.ceil(UInt32, thread_count / CUDAdrv.warpsize(device()))
+    local_arenas_bytesize = sizeof(Ptr{LocalArena}) * config.local_arena_count
+    safepoint_bytesize = sizeof(SafepointState) * warp_count
+    fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
+    rootbuf_bytesize = sizeof(ObjectRef) * config.root_buffer_capacity * thread_count
+
+    result = 0
+    result += local_arenas_bytesize
+    result += safepoint_bytesize
+    result += fingerbuf_bytesize
+    result += rootbuf_bytesize
+    result += config.local_arena_count * config.local_arena_initial_size
+    result += config.global_arena_initial_size
+    return result
+end
+
 # Initializes a GC heap and produces a master record.
 function gc_init!(
     heap::GCHeapDescription,
-    thread_count::Integer;
-    warp_count::Union{Integer, Nothing} = nothing,
-    root_buffer_capacity::Integer = default_root_buffer_capacity,
-    local_arena_count::Integer = 8)::GCMasterRecord
+    config::GCConfiguration,
+    thread_count::Integer)::GCMasterRecord
 
-    if warp_count == nothing
-        warp_count = Base.ceil(UInt32, thread_count / CUDAdrv.warpsize(device()))
-    end
+    warp_count = Base.ceil(UInt32, thread_count / CUDAdrv.warpsize(device()))
 
     master_region = heap.regions[1]
 
@@ -1196,7 +1232,7 @@ function gc_init!(
     gc_memory_end_ptr = master_region.start + master_region.size
 
     # Allocate a local arena pointer buffer.
-    local_arenas_bytesize = sizeof(Ptr{LocalArena}) * local_arena_count
+    local_arenas_bytesize = sizeof(Ptr{LocalArena}) * config.local_arena_count
     local_arenas_ptr = Base.unsafe_convert(Ptr{Ptr{LocalArena}}, gc_memory_start_ptr)
 
     # Allocate the safepoint flag buffer.
@@ -1206,12 +1242,12 @@ function gc_init!(
     # Allocate root buffers.
     fingerbuf_bytesize = sizeof(Ptr{ObjectRef}) * thread_count
     fingerbuf_ptr = Base.unsafe_convert(Ptr{Ptr{ObjectRef}}, safepoint_ptr + fingerbuf_bytesize)
-    rootbuf_bytesize = sizeof(ObjectRef) * root_buffer_capacity * thread_count
+    rootbuf_bytesize = sizeof(ObjectRef) * config.root_buffer_capacity * thread_count
     rootbuf_ptr = Base.unsafe_convert(Ptr{ObjectRef}, fingerbuf_ptr + fingerbuf_bytesize)
 
     # Populate the root buffer fingers.
     for i in 1:thread_count
-        unsafe_store!(fingerbuf_ptr, rootbuf_ptr + (i - 1) * sizeof(ObjectRef) * root_buffer_capacity, i)
+        unsafe_store!(fingerbuf_ptr, rootbuf_ptr + (i - 1) * sizeof(ObjectRef) * config.root_buffer_capacity, i)
     end
 
     # Compute a pointer to the start of the tiny arena.
@@ -1226,10 +1262,10 @@ function gc_init!(
     end
 
     # Set up local arenas.
-    for i in 1:local_arena_count
-        local_arena = make_gc_arena!(LocalArena, arena_start_ptr, Csize_t(local_arena_starvation_threshold))
+    for i in 1:config.local_arena_count
+        local_arena = make_gc_arena!(LocalArena, arena_start_ptr, Csize_t(config.local_arena_initial_size))
         unsafe_store!(local_arenas_ptr, local_arena, i)
-        arena_start_ptr += local_arena_starvation_threshold
+        arena_start_ptr += config.local_arena_initial_size
     end
 
     # Set up the global arena.
@@ -1238,8 +1274,8 @@ function gc_init!(
     return GCMasterRecord(
         warp_count,
         UInt32(thread_count),
-        root_buffer_capacity,
-        UInt32(local_arena_count),
+        UInt32(config.root_buffer_capacity),
+        UInt32(config.local_arena_count),
         arena_for_ants,
         local_arenas_ptr,
         global_arena,
@@ -1659,7 +1695,7 @@ end
 
 # Collects garbage. This function is designed to be called by the host,
 # not by the device.
-function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription, report::GCReport)
+function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription, config::GCConfiguration, report::GCReport)
     poll_time = Base.@elapsed begin
         # First off, we have to wait for all warps to reach a safepoint. Clear
         # safepoint flags and wait for warps to set them again.
@@ -1748,9 +1784,9 @@ function gc_collect_impl(master_record::GCMasterRecord, heap::GCHeapDescription,
             # limit then we'll expand the GC heap and add the additional memory
             # to the arena's free list.
             threshold = if arena == master_record.global_arena
-                global_arena_starvation_threshold
+                config.global_arena_starvation_threshold
             else
-                local_arena_starvation_threshold
+                config.local_arena_starvation_threshold
             end
 
             if free_memory < threshold
@@ -1822,6 +1858,9 @@ macro cuda_gc(ex...)
     # Get the total number of threads.
     thread_count = get_kwarg_or_default(call_kwargs, :threads, 1)
 
+    # Get the GC configuration.
+    config = get_kwarg_or_default(env_kwargs, :gc_config, GCConfiguration())
+
     # convert the arguments, call the compiler and launch the kernel
     # while keeping the original arguments alive
     push!(code.args,
@@ -1831,11 +1870,14 @@ macro cuda_gc(ex...)
                 local host_interrupt_array = alloc_shared_array((1,), ready)
                 local device_interrupt_buffer = get_shared_device_buffer(host_interrupt_array)
 
+                # Evaluate the GC configuration.
+                local gc_config = $(esc(config))
+
                 # Allocate a shared buffer for GC memory.
-                local gc_memory_size = initial_gc_heap_size + sizeof(ObjectRef) * default_root_buffer_capacity * $(esc(thread_count))
+                local gc_memory_size = initial_heap_size(gc_config, $(esc(thread_count)))
                 local gc_heap = GCHeapDescription()
                 expand!(gc_heap, gc_memory_size)
-                local master_record = gc_init!(gc_heap, $(esc(thread_count)))
+                local master_record = gc_init!(gc_heap, gc_config, $(esc(thread_count)))
 
                 # Define a kernel initialization function.
                 local function kernel_init(kernel)
@@ -1866,7 +1908,7 @@ macro cuda_gc(ex...)
 
                 local gc_report = GCReport()
                 local function handle_interrupt()
-                    gc_collect_impl(master_record, gc_heap, gc_report)
+                    gc_collect_impl(master_record, gc_heap, gc_config, gc_report)
                 end
 
                 try

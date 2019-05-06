@@ -8,7 +8,7 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # split keyword arguments to `@cuda` into ones affecting the macro itself, the compiler and
 # the code it generates, or the execution
 function split_kwargs(kwargs)
-    macro_kws    = [:dynamic, :init]
+    macro_kws    = [:dynamic, :init, :gc_config]
     compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :malloc]
     call_kws     = [:cooperative, :blocks, :threads, :shmem, :stream]
     macro_kwargs = []
@@ -450,7 +450,7 @@ functionality is included in [`@cuda`](@ref).
 The 'init' keyword argument is a function that takes a kernel as argument and
 sets up an environment for the kernel.
 """
-function prepare_kernel(kernel::AbstractKernel{F,TT}; init::Function=nop_init_kernel) where {F,TT}
+function prepare_kernel(kernel::AbstractKernel{F,TT}; init::Function=nop_init_kernel, kw...) where {F,TT}
     # Just call the 'init' function for now.
     init(kernel)
 end
