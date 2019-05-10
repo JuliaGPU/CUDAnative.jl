@@ -45,7 +45,7 @@ function sum(list::List{T}) where T
     reduce(+, list; init=zero(T))
 end
 
-const element_count = 1000
+const element_count = 2000
 const thread_count = 32
 
 function kernel(elements::CUDAnative.DevicePtr{Int64}, results::CUDAnative.DevicePtr{Int64})
@@ -67,8 +67,8 @@ Mem.upload!(destination_array, zeros(Int64, thread_count))
 
 # Run the kernel.
 if use_gc
-    @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
-    stats = @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda gc=true threads=thread_count gc_config=GCConfiguration(; global_arena_initial_size=1024, global_arena_starvation_threshold=1024) kernel(source_pointer, destination_pointer)
+    stats = @cuda gc=true threads=thread_count kernel(source_pointer, destination_pointer)
 else
     @cuda threads=thread_count kernel(source_pointer, destination_pointer)
     stats = CUDAdrv.@elapsed @cuda threads=thread_count kernel(source_pointer, destination_pointer)

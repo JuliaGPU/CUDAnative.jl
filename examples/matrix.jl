@@ -121,9 +121,9 @@ destination_array = Mem.alloc(Int64, thread_count)
 destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
 if use_gc
-    time = @cuda_gc threads=thread_count kernel(destination_pointer)
+    time = @cuda gc=true threads=thread_count kernel(destination_pointer)
     println(time)
-    time = @cuda_gc threads=thread_count kernel(destination_pointer)
+    time = @cuda gc=true threads=thread_count kernel(destination_pointer)
     println(time)
 else
     time = CUDAdrv.@elapsed @cuda threads=thread_count kernel(destination_pointer)

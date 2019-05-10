@@ -43,7 +43,7 @@
 #   * When the device runs out of GC memory, it requests an interrupt
 #     to mark and sweep.
 
-export @cuda_gc, gc_malloc, gc_malloc_object, gc_collect, gc_safepoint, GCConfiguration
+export gc_malloc, gc_malloc_object, gc_collect, gc_safepoint, GCConfiguration
 
 import Base: length, show
 import Printf: @sprintf
@@ -1816,119 +1816,4 @@ function get_kwarg_or_default(kwarg_list, key::Symbol, default)
         end
     end
     return default
-end
-
-"""
-    @cuda_gc [kwargs...] func(args...)
-
-High-level interface for executing code on a GPU with GC support.
-The `@cuda_gc` macro should prefix a call, with `func` a callable function
-or object that should return nothing. It will be compiled to a CUDA function upon first
-use, and to a certain extent arguments will be converted and managed automatically using
-`cudaconvert`. Next, a call to `CUDAdrv.cudacall` is performed, scheduling a kernel
-launch on the current CUDA context. Finally, `@cuda_gc` waits for the kernel to finish,
-performing garbage collection in the meantime if necessary.
-
-Several keyword arguments are supported that influence kernel compilation and execution. For
-more information, refer to the documentation of respectively [`cufunction`](@ref) and
-[`CUDAnative.Kernel`](@ref).
-"""
-macro cuda_gc(ex...)
-    # destructure the `@cuda_gc` expression
-    if length(ex) > 0 && ex[1].head == :tuple
-        error("The tuple argument to @cuda has been replaced by keywords: `@cuda_gc threads=... fun(args...)`")
-    end
-    call = ex[end]
-    kwargs = ex[1:end-1]
-
-    # destructure the kernel call
-    if call.head != :call
-        throw(ArgumentError("second argument to @cuda_gc should be a function call"))
-    end
-    f = call.args[1]
-    args = call.args[2:end]
-
-    code = quote end
-    env_kwargs, compiler_kwargs, call_kwargs = CUDAnative.split_kwargs(kwargs)
-    vars, var_exprs = CUDAnative.assign_args!(code, args)
-
-    # Find the stream on which the kernel is to be scheduled.
-    stream = get_kwarg_or_default(call_kwargs, :stream, CuDefaultStream())
-
-    # Get the total number of threads.
-    thread_count = get_kwarg_or_default(call_kwargs, :threads, 1)
-
-    # Get the GC configuration.
-    config = get_kwarg_or_default(env_kwargs, :gc_config, GCConfiguration())
-
-    # convert the arguments, call the compiler and launch the kernel
-    # while keeping the original arguments alive
-    push!(code.args,
-        quote
-            GC.@preserve $(vars...) begin
-                # Define a trivial buffer that contains the interrupt state.
-                local host_interrupt_array = alloc_shared_array((1,), ready)
-                local device_interrupt_buffer = get_shared_device_buffer(host_interrupt_array)
-
-                # Evaluate the GC configuration.
-                local gc_config = $(esc(config))
-
-                # Allocate a shared buffer for GC memory.
-                local gc_memory_size = initial_heap_size(gc_config, $(esc(thread_count)))
-                local gc_heap = GCHeapDescription()
-                expand!(gc_heap, gc_memory_size)
-                local master_record = gc_init!(gc_heap, gc_config, $(esc(thread_count)))
-
-                # Define a kernel initialization function.
-                local function kernel_init(kernel)
-                    # Set the interrupt state pointer.
-                    try
-                        global_handle = CuGlobal{CuPtr{UInt32}}(kernel.mod, "interrupt_pointer")
-                        set(global_handle, CuPtr{UInt32}(device_interrupt_buffer.ptr))
-                    catch exception
-                        # The interrupt pointer may not have been declared (because it is unused).
-                        # In that case, we should do nothing.
-                        if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
-                            rethrow()
-                        end
-                    end
-
-                    # Set the GC master record.
-                    try
-                        global_handle = CuGlobal{GCMasterRecord}(kernel.mod, "gc_master_record")
-                        set(global_handle, master_record)
-                    catch exception
-                        # The GC info pointer may not have been declared (because it is unused).
-                        # In that case, we should do nothing.
-                        if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
-                            rethrow()
-                        end
-                    end
-                end
-
-                local gc_report = GCReport()
-                local function handle_interrupt()
-                    gc_collect_impl(master_record, gc_heap, gc_config, gc_report)
-                end
-
-                try
-                    # Standard kernel setup logic.
-                    local kernel_args = CUDAnative.cudaconvert.(($(var_exprs...),))
-                    local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
-                    local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; gc = true, malloc="ptx_gc_malloc", $(map(esc, compiler_kwargs)...))
-                    CUDAnative.prepare_kernel(kernel; init=kernel_init, $(map(esc, env_kwargs)...))
-                    gc_report.elapsed_time = Base.@elapsed begin
-                        kernel(kernel_args...; $(map(esc, call_kwargs)...))
-
-                        # Handle interrupts.
-                        handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
-                    end
-                finally
-                    free_shared_array(host_interrupt_array)
-                    free!(gc_heap)
-                end
-                gc_report
-            end
-         end)
-    return code
 end

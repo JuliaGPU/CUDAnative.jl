@@ -17,4 +17,4 @@ function kernel()
     return
 end
 
-@cuda_gc threads=thread_count kernel()
+@cuda gc=true threads=thread_count kernel()

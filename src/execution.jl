@@ -9,7 +9,7 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # the code it generates, or the execution
 function split_kwargs(kwargs)
     macro_kws    = [:dynamic, :init, :gc_config]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :malloc]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :malloc, :gc]
     call_kws     = [:cooperative, :blocks, :threads, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
@@ -90,6 +90,9 @@ performed, scheduling a kernel launch on the current CUDA context.
 
 Several keyword arguments are supported that influence the behavior of `@cuda`.
 - `dynamic`: use dynamic parallelism to launch device-side kernels
+- `gc`: set up a GC and use it to allocate memory; cannot be combined with `dynamic`
+- `gc_config`: the GC configuration to use if `gc=true`; see [`GCConfiguration`](@ref)
+- `malloc`: the name of the allocation function to use, if `gc` is not in use
 - arguments that influence kernel compilation: see [`cufunction`](@ref) and
   [`dynamic_cufunction`](@ref)
 - arguments that influence kernel launch: see [`CUDAnative.HostKernel`](@ref) and
@@ -133,27 +136,24 @@ macro cuda(ex...)
     args = call.args[2:end]
 
     code = quote end
-    macro_kwargs, compiler_kwargs, call_kwargs = split_kwargs(kwargs)
+    env_kwargs, compiler_kwargs, call_kwargs = split_kwargs(kwargs)
     vars, var_exprs = assign_args!(code, args)
 
     # handle keyword arguments that influence the macro's behavior
-    dynamic = false
-    env_kwargs = []
-    for kwarg in macro_kwargs
-        key,val = kwarg.args
-        if key == :dynamic
-            isa(val, Bool) || throw(ArgumentError("`dynamic` keyword argument to @cuda should be a constant value"))
-            dynamic = val::Bool
-        else
-            push!(env_kwargs, kwarg)
-        end
-    end
+    dynamic = get_kwarg_or_default(env_kwargs, :dynamic, false)
+    isa(dynamic, Bool) || throw(ArgumentError("`dynamic` keyword argument to @cuda should be a constant Boolean"))
+
+    gc = get_kwarg_or_default(compiler_kwargs, :gc, false)
+    isa(gc, Bool) || throw(ArgumentError("`gc` keyword argument to @cuda should be a constant Boolean"))
 
     if dynamic
         # FIXME: we could probably somehow support kwargs with constant values by either
         #        saving them in a global Dict here, or trying to pick them up from the Julia
         #        IR when processing the dynamic parallelism marker
         isempty(compiler_kwargs) || error("@cuda dynamic parallelism does not support compiler keyword arguments")
+
+        # FIXME: update the GC to support dynamic parallelism somehow.
+        !gc || error("@cuda does not support both `gc=true` and `dynamic=true`")
 
         # dynamic, device-side kernel launch
         push!(code.args,
@@ -164,6 +164,84 @@ macro cuda(ex...)
                 prepare_kernel(kernel; $(map(esc, env_kwargs)...))
                 kernel($(var_exprs...); $(map(esc, call_kwargs)...))
              end)
+    elseif gc
+        # Find the stream on which the kernel is to be scheduled.
+        stream = get_kwarg_or_default(call_kwargs, :stream, CuDefaultStream())
+
+        # Get the total number of threads.
+        thread_count = get_kwarg_or_default(call_kwargs, :threads, 1)
+
+        # Get the GC configuration.
+        config = get_kwarg_or_default(env_kwargs, :gc_config, GCConfiguration())
+
+        # GC-enabled host-side launch.
+        push!(code.args,
+            quote
+                GC.@preserve $(vars...) begin
+                    # Define a trivial buffer that contains the interrupt state.
+                    local host_interrupt_array = alloc_shared_array((1,), ready)
+                    local device_interrupt_buffer = get_shared_device_buffer(host_interrupt_array)
+
+                    # Evaluate the GC configuration.
+                    local gc_config = $(esc(config))
+
+                    # Allocate a shared buffer for GC memory.
+                    local gc_memory_size = initial_heap_size(gc_config, $(esc(thread_count)))
+                    local gc_heap = GCHeapDescription()
+                    expand!(gc_heap, gc_memory_size)
+                    local master_record = gc_init!(gc_heap, gc_config, $(esc(thread_count)))
+
+                    # Define a kernel initialization function.
+                    local function kernel_init(kernel)
+                        # Set the interrupt state pointer.
+                        try
+                            global_handle = CuGlobal{CuPtr{UInt32}}(kernel.mod, "interrupt_pointer")
+                            set(global_handle, CuPtr{UInt32}(device_interrupt_buffer.ptr))
+                        catch exception
+                            # The interrupt pointer may not have been declared (because it is unused).
+                            # In that case, we should do nothing.
+                            if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
+                                rethrow()
+                            end
+                        end
+
+                        # Set the GC master record.
+                        try
+                            global_handle = CuGlobal{GCMasterRecord}(kernel.mod, "gc_master_record")
+                            set(global_handle, master_record)
+                        catch exception
+                            # The GC info pointer may not have been declared (because it is unused).
+                            # In that case, we should do nothing.
+                            if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
+                                rethrow()
+                            end
+                        end
+                    end
+
+                    local gc_report = GCReport()
+                    local function handle_interrupt()
+                        gc_collect_impl(master_record, gc_heap, gc_config, gc_report)
+                    end
+
+                    try
+                        # Standard kernel setup logic.
+                        local kernel_args = CUDAnative.cudaconvert.(($(var_exprs...),))
+                        local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
+                        local kernel = CUDAnative.cufunction($(esc(f)), kernel_tt; malloc="ptx_gc_malloc", $(map(esc, compiler_kwargs)...))
+                        CUDAnative.prepare_kernel(kernel; init=kernel_init, $(map(esc, env_kwargs)...))
+                        gc_report.elapsed_time = Base.@elapsed begin
+                            kernel(kernel_args...; $(map(esc, call_kwargs)...))
+
+                            # Handle interrupts.
+                            handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
+                        end
+                    finally
+                        free_shared_array(host_interrupt_array)
+                        free!(gc_heap)
+                    end
+                    gc_report
+                end
+            end)
     else
         # regular, host-side kernel launch
         #

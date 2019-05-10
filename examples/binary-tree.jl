@@ -9,7 +9,7 @@ import Base: haskey, insert!
 # The main point of this example is to demonstrate that even
 # naive, pointer-chasing programs can be compiled to GPU kernels.
 
-const use_gc = true
+const use_gc = false
 
 """A binary search tree node."""
 abstract type BinarySearchTreeNode{T} end
@@ -136,6 +136,8 @@ function kernel(a::CUDAnative.DevicePtr{Int64}, b::CUDAnative.DevicePtr{Int64})
     return
 end
 
+ccall((:ha_init_bytes, "/media/jonathan/Quark/School/CUDAnative.jl/libhalloc"), Cvoid, (Csize_t,), Csize_t(256 * 1024 * 1024))
+
 # Generate a sequence of 64-bit truncated Fibonacci numbers.
 number_set = fibonacci(Int64, number_count)
 # Randomize the sequence's order.
@@ -156,18 +158,18 @@ Mem.upload!(destination_array, test_sequence)
 
 if use_gc
     # Run the kernel.
-    @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda gc=true malloc="_Z8hamallocm" threads=thread_count kernel(source_pointer, destination_pointer)
 
     # Run it again.
     Mem.upload!(destination_array, test_sequence)
-    stats = @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+    stats = @cuda gc=true malloc="_Z8hamallocm" threads=thread_count kernel(source_pointer, destination_pointer)
 else
     # Run the kernel.
-    @cuda threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda malloc="_Z8hamallocm" threads=thread_count kernel(source_pointer, destination_pointer)
 
     # Run it again and time it this time.
     Mem.upload!(destination_array, test_sequence)
-    stats = CUDAdrv.@elapsed @cuda threads=thread_count kernel(source_pointer, destination_pointer)
+    stats = CUDAdrv.@elapsed @cuda malloc="_Z8hamallocm" threads=thread_count kernel(source_pointer, destination_pointer)
 end
 println(stats)
 

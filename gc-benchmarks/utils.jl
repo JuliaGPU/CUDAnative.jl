@@ -42,7 +42,7 @@ end
 macro cuda_sync(args...)
     esc(quote
         if should_use_gc()
-            CUDAnative.@cuda_gc gc_config=gc_config $(args...)
+            CUDAnative.@cuda gc=true gc_config=gc_config $(args...)
         else
             @sync CUDAnative.@cuda $(args...)
         end

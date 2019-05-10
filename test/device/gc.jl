@@ -6,7 +6,7 @@ dummy() = return
 
 dummy_handler(kernel) = return
 
-@testset "@cuda_gc" begin
+@testset "@cuda gc=true" begin
 
 @testset "allocate and collect" begin
     # This test allocates many very small and very large objects. Both the small
@@ -60,7 +60,7 @@ dummy_handler(kernel) = return
     Mem.upload!(destination_array, zeros(Float32, thread_count))
 
     # Run the kernel.
-    @cuda_gc threads=thread_count kernel(source_pointer, destination_pointer)
+    @cuda gc=true threads=thread_count kernel(source_pointer, destination_pointer)
 
     @test Mem.download(Float32, destination_array, thread_count) == fill(42.f0, thread_count)
 end
