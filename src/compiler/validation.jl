@@ -23,6 +23,33 @@ function check_method(job::CompilerJob)
     return
 end
 
+if VERSION < v"1.1.0-DEV.593"
+    fieldtypes(@nospecialize(dt)) = ntuple(i->fieldtype(dt, i), fieldcount(dt))
+end
+
+# The actual check is rather complicated
+# and might change from version to version...
+function hasfieldcount(@nospecialize(dt))
+    try
+        fieldcount(dt)
+    catch
+        return false
+    end
+    return true
+end
+
+function explain_nonisbits(@nospecialize(dt), depth=1)
+    hasfieldcount(dt) || return ""
+    msg = ""
+    for (ft, fn) in zip(fieldtypes(dt), fieldnames(dt))
+        if !isbitstype(ft)
+            msg *= "  "^depth * ".$fn is of type $ft which is not isbits.\n"
+            msg *= explain_nonisbits(ft, depth+1)
+        end
+    end
+    return msg
+end
+
 function check_invocation(job::CompilerJob, entry::LLVM.Function)
     # make sure any non-isbits arguments are unused
     real_arg_i = 0
@@ -34,9 +61,13 @@ function check_invocation(job::CompilerJob, entry::LLVM.Function)
         if !isbitstype(dt)
             param = parameters(entry)[real_arg_i]
             if !isempty(uses(param))
-                throw(KernelError(job, "passing and using non-bitstype argument",
-                    """Argument $arg_i to your kernel function is of type $dt.
-                       That type is not isbits, and such arguments are only allowed when they are unused by the kernel."""))
+                msg = """Argument $arg_i to your kernel function is of type $dt.
+                       That type is not isbits, and such arguments are only allowed when they are unused by the kernel."""
+
+                # explain which fields are not isbits
+                msg *= explain_nonisbits(dt)
+
+                throw(KernelError(job, "passing and using non-bitstype argument", msg))
             end
         end
     end
@@ -57,14 +88,18 @@ end
 const RUNTIME_FUNCTION = "call to the Julia runtime"
 const UNKNOWN_FUNCTION = "call to an unknown function"
 const POINTER_FUNCTION = "call through a literal pointer"
+const DELAYED_BINDING  = "use of an undefined name"
+const DYNAMIC_CALL     = "dynamic function invocation"
 
 function Base.showerror(io::IO, err::InvalidIRError)
     print(io, "InvalidIRError: compiling $(signature(err.job)) resulted in invalid LLVM IR")
     for (kind, bt, meta) in err.errors
         print(io, "\nReason: unsupported $kind")
         if meta != nothing
-            if kind == RUNTIME_FUNCTION || kind == UNKNOWN_FUNCTION || kind == POINTER_FUNCTION
+            if kind == RUNTIME_FUNCTION || kind == UNKNOWN_FUNCTION || kind == POINTER_FUNCTION || kind == DYNAMIC_CALL
                 print(io, " (call to ", meta, ")")
+            elseif kind == DELAYED_BINDING
+                print(io, " (use of '", meta, "')")
             end
         end
         Base.show_backtrace(io, bt)
@@ -117,6 +152,75 @@ function check_ir!(job, errors::Vector{IRError}, inst::LLVM.CallInst)
     if isa(dest, LLVM.Function)
         fn = LLVM.name(dest)
 
+        # some special handling for runtime functions that we don't implement
+
+        if fn == "jl_get_binding_or_error"
+            # interpret the arguments
+            sym = try
+                m, sym, _ = operands(inst)
+                sym = first(operands(sym::ConstantExpr))::ConstantInt
+                sym = convert(Int, sym)
+                sym = Ptr{Cvoid}(sym)
+                Base.unsafe_pointer_to_objref(sym)
+            catch e
+                isa(e,TypeError) || rethrow()
+                @warn "Decoding arguments to jl_get_binding_or_error failed, please file a bug with a reproducer." inst bb=LLVM.parent(inst)
+                nothing
+            end
+
+            if sym !== nothing
+                bt = backtrace(inst)
+                push!(errors, (DELAYED_BINDING, bt, sym))
+                return errors
+            end
+
+        elseif fn == "jl_invoke"
+            # interpret the arguments
+            meth = try
+                meth, args, nargs, _ = operands(inst)
+                meth = first(operands(meth::ConstantExpr))::ConstantExpr
+                meth = first(operands(meth))::ConstantInt
+                meth = convert(Int, meth)
+                meth = Ptr{Cvoid}(meth)
+                Base.unsafe_pointer_to_objref(meth)
+            catch e
+                isa(e,TypeError) || rethrow()
+                @warn "Decoding arguments to jl_invoke failed, please file a bug with a reproducer." inst bb=LLVM.parent(inst)
+                nothing
+            end
+
+            if meth !== nothing
+                bt = backtrace(inst)
+                push!(errors, (DYNAMIC_CALL, bt, meth.def))
+                return errors
+            end
+
+        elseif fn == "jl_apply_generic"
+            # interpret the arguments
+            f = try
+                args, nargs, _ = operands(inst)
+                ## args is a buffer where arguments are stored in
+                f, args = user.(uses(args))
+                ## first store into the args buffer is a direct store
+                f = first(operands(f::LLVM.StoreInst))::ConstantExpr
+                f = first(operands(f))::ConstantExpr # get rid of addrspacecast
+                f = first(operands(f))::ConstantInt # get rid of inttoptr
+                f = convert(Int, f)
+                f = Ptr{Cvoid}(f)
+                Base.unsafe_pointer_to_objref(f)
+            catch e
+                isa(e,TypeError) || rethrow()
+                @warn "Decoding arguments to jl_apply_generic failed, please file a bug with a reproducer." inst bb=LLVM.parent(inst)
+                nothing
+            end
+
+            if f !== nothing
+                bt = backtrace(inst)
+                push!(errors, (DYNAMIC_CALL, bt, f))
+                return errors
+            end
+        end
+
         # detect calls to undefined functions
         if isdeclaration(dest) && intrinsic_id(dest) == 0 && !(fn in special_fns) && fn != job.malloc
             # figure out if the function lives in the Julia runtime library
@@ -139,8 +243,6 @@ function check_ir!(job, errors::Vector{IRError}, inst::LLVM.CallInst)
         # let's assume it's valid ASM
     elseif isa(dest, ConstantExpr)
         # detect calls to literal pointers
-        # FIXME: can we detect these properly?
-        # FIXME: jl_apply_generic and jl_invoke also have such arguments
         if occursin("inttoptr", string(dest))
             # extract the literal pointer
             ptr_arg = first(operands(dest))

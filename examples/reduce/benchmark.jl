@@ -13,6 +13,7 @@ const cap = capability(dev)
 
 len = 10^7
 input = ones(Int32, len)
+output = similar(input)
 
 
 ## CPU
@@ -31,7 +32,7 @@ benchmark_cpu = @benchmarkable begin
 open(joinpath(@__DIR__, "reduce.jl.ptx"), "w") do f
     CUDAnative.code_ptx(f, reduce_grid, Tuple{typeof(+), CuDeviceVector{Int32,AS.Global},
                                               CuDeviceVector{Int32,AS.Global}, Int32};
-                        cap=v"6.1.0")
+                        cap=cap)
 end
 
 benchmark_gpu = @benchmarkable begin
@@ -39,8 +40,8 @@ benchmark_gpu = @benchmarkable begin
         val = Array(gpu_output)[1]
     end setup=(
         val = nothing;
-        gpu_input = CuArray($input);
-        gpu_output = similar(gpu_input)
+        gpu_input = CuTestArray($input);
+        gpu_output = CuTestArray($output)
     ) teardown=(
         gpu_input = nothing;
         gpu_output = nothing

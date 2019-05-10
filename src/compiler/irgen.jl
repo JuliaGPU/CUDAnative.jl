@@ -16,9 +16,9 @@ safe_fn(f::Core.Function) = safe_fn(String(typeof(f).name.mt.name))
 safe_fn(f::LLVM.Function) = safe_fn(LLVM.name(f))
 
 # generate a pseudo-backtrace from a stack of methods being emitted
-function backtrace(job::CompilerJob, method_stack::Vector{Core.MethodInstance})
+function backtrace(job::CompilerJob, call_stack::Vector{Core.MethodInstance})
     bt = StackTraces.StackFrame[]
-    for method_instance in method_stack
+    for method_instance in call_stack
         method = method_instance.def
         frame = StackTraces.StackFrame(method.name, method.file, method.line)
         pushfirst!(bt, frame)
@@ -34,37 +34,59 @@ end
 Base.showerror(io::IO, err::MethodSubstitutionWarning) =
     print(io, "You called $(err.original), maybe you intended to call $(err.substitute) instead?")
 
-function compile_linfo(job::CompilerJob, linfo::Core.MethodInstance, world)
+function compile_method_instance(job::CompilerJob, method_instance::Core.MethodInstance, world)
+    function postprocess(ir)
+        # get rid of jfptr wrappers
+        for llvmf in functions(ir)
+            startswith(LLVM.name(llvmf), "jfptr_") && unsafe_delete!(ir, llvmf)
+        end
+
+        return
+    end
+
     # set-up the compiler interface
+    last_method_instance = nothing
+    call_stack = Vector{Core.MethodInstance}()
+    dependencies = MultiDict{Core.MethodInstance,LLVM.Function}()
     function hook_module_setup(ref::Ptr{Cvoid})
         ref = convert(LLVM.API.LLVMModuleRef, ref)
-        module_setup(LLVM.Module(ref))
+        ir = LLVM.Module(ref)
+        module_setup(ir)
     end
-    dependencies = Vector{LLVM.Module}()
     function hook_module_activation(ref::Ptr{Cvoid})
         ref = convert(LLVM.API.LLVMModuleRef, ref)
-        push!(dependencies, LLVM.Module(ref))
+        ir = LLVM.Module(ref)
+        postprocess(ir)
+
+        # find the function that this module defines
+        llvmfs = filter(llvmf -> !isdeclaration(llvmf) &&
+                                 startswith(LLVM.name(llvmf), "julia_") &&
+                                 linkage(llvmf) == LLVM.API.LLVMExternalLinkage,
+                        collect(functions(ir)))
+        @compiler_assert length(llvmfs) == 1 job
+        llvmf = first(llvmfs)
+
+        insert!(dependencies, last_method_instance, llvmf)
     end
-    method_stack = Vector{Core.MethodInstance}()
     function hook_emit_function(method_instance, code, world)
         skip_verifier = false
-        if length(method_stack) >= 1
-            last_method = last(method_stack)
-            skip_verifier = last_method.def.name === :overdub
+        if length(call_stack) >= 1
+            caller = last(call_stack)
+            skip_verifier = caller.def.name === :overdub
         end
-        push!(method_stack, method_instance)
+
+        push!(call_stack, method_instance)
 
         # check for recursion
-        if method_instance in method_stack[1:end-1]
+        if method_instance in call_stack[1:end-1]
             throw(KernelError(job, "recursion is currently not supported";
-                              bt=backtrace(job, method_stack)))
+                              bt=backtrace(job, call_stack)))
         end
 
-        # if last method on stack is overdub skip the Base check
-        # and trust in Cassette
+        # if last method on stack is overdub skip the Base check and trust in Cassette
         skip_verifier && return
 
-        # check for Base methods that exist in CUDAnative too
+        # check for Base functions that exist in CUDAnative too
         # FIXME: this might be too coarse
         method = method_instance.def
         if Base.moduleroot(method.module) == Base &&
@@ -74,14 +96,14 @@ function compile_linfo(job::CompilerJob, linfo::Core.MethodInstance, world)
             if hasmethod(substitute_function, tt)
                 method′ = which(substitute_function, tt)
                 if Base.moduleroot(method′.module) == CUDAnative
-                    @warn "calls to Base intrinsics might be GPU incompatible" exception=(MethodSubstitutionWarning(method, method′), backtrace(job, method_stack))
+                    @warn "calls to Base intrinsics might be GPU incompatible" exception=(MethodSubstitutionWarning(method, method′), backtrace(job, call_stack))
                 end
             end
         end
     end
     function hook_emitted_function(method, code, world)
-        @compiler_assert last(method_stack) == method job
-        pop!(method_stack)
+        @compiler_assert last(call_stack) == method job
+        last_method_instance = pop!(call_stack)
     end
     params = Base.CodegenParams(cached             = false,
                                 track_allocations  = false,
@@ -96,24 +118,58 @@ function compile_linfo(job::CompilerJob, linfo::Core.MethodInstance, world)
     # get the code
     ref = ccall(:jl_get_llvmf_defn, LLVM.API.LLVMValueRef,
                 (Any, UInt, Bool, Bool, Base.CodegenParams),
-                linfo, world, #=wrapper=#false, #=optimize=#false, params)
+                method_instance, world, #=wrapper=#false, #=optimize=#false, params)
     if ref == C_NULL
         throw(InternalCompilerError(job, "the Julia compiler could not generate LLVM IR"))
     end
     llvmf = LLVM.Function(ref)
+    ir = LLVM.parent(llvmf)
+    postprocess(ir)
 
-    modules = [LLVM.parent(llvmf), dependencies...]
-    return llvmf, modules
+    return llvmf, dependencies
 end
 
-function irgen(job::CompilerJob, linfo::Core.MethodInstance, world)
-    entry, modules = @timeit to[] "emission" compile_linfo(job, linfo, world)
+function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world; internalize::Bool=true)
+    entry, dependencies = @timeit to[] "emission" compile_method_instance(job, method_instance, world)
+    mod = LLVM.parent(entry)
 
     # link in dependent modules
     @timeit to[] "linking" begin
-        mod = popfirst!(modules)
-        for dep in modules
-            link!(mod, dep)
+        # we disable Julia's compilation cache not to poison it with GPU-specific code.
+        # as a result, we might get multiple modules for a single method instance.
+        cache = Dict{String,String}()
+
+        for called_method_instance in keys(dependencies)
+            llvmfs = dependencies[called_method_instance]
+
+            # link the first module
+            llvmf = popfirst!(llvmfs)
+            llvmfn = LLVM.name(llvmf)
+            link!(mod, LLVM.parent(llvmf))
+
+            # process subsequent duplicate modules
+            for dup_llvmf in llvmfs
+                if Base.JLOptions().debug_level >= 2
+                    # link them too, to ensure accurate backtrace reconstruction
+                    link!(mod, LLVM.parent(dup_llvmf))
+                else
+                    # don't link them, but note the called function name in a cache
+                    dup_llvmfn = LLVM.name(dup_llvmf)
+                    cache[dup_llvmfn] = llvmfn
+                end
+            end
+        end
+
+        # resolve function declarations with cached entries
+        for llvmf in filter(isdeclaration, collect(functions(mod)))
+            llvmfn = LLVM.name(llvmf)
+            if haskey(cache, llvmfn)
+                def_llvmfn = cache[llvmfn]
+                replace_uses!(llvmf, functions(mod)[def_llvmfn])
+
+                @compiler_assert isempty(uses(llvmf)) job
+                unsafe_delete!(LLVM.parent(llvmf), llvmf)
+            end
         end
     end
 
@@ -123,18 +179,6 @@ function irgen(job::CompilerJob, linfo::Core.MethodInstance, world)
 
         # only occurs in debug builds
         delete!(function_attributes(llvmf), EnumAttribute("sspstrong", 0, JuliaContext()))
-
-        # dependent modules might have brought in other jfptr wrappers, delete them
-        if startswith(LLVM.name(llvmf), "jfptr_") && isempty(uses(llvmf))
-            unsafe_delete!(mod, llvmf)
-            continue
-        end
-
-        # llvmcall functions aren't to be called, so mark them internal (cleans up the IR)
-        if startswith(llvmfn, "jl_llvmcall")
-            linkage!(llvmf, LLVM.API.LLVMInternalLinkage)
-            continue
-        end
 
         # rename functions
         if !isdeclaration(llvmf)
@@ -178,6 +222,28 @@ function irgen(job::CompilerJob, linfo::Core.MethodInstance, world)
     @timeit to[] "rewrite" ModulePassManager() do pm
         global current_job
         current_job = job
+
+        linkage!(entry, LLVM.API.LLVMExternalLinkage)
+        if internalize
+            # We want to internalize functions so we can optimize
+            # them, but we don't really want to internalize globals
+            # because doing so may cause multiple copies of the same
+            # globals to appear after linking together modules.
+            #
+            # For example, the runtime library includes GC-related globals.
+            # It is imperative that these globals are shared by all modules,
+            # but if they are internalized before they are linked then
+            # they will actually not be internalized.
+            #
+            # Also, don't internalize the entry point, for obvious reasons.
+            non_internalizable_names = [LLVM.name(entry)]
+            for val in globals(mod)
+                if isa(val, LLVM.GlobalVariable)
+                    push!(non_internalizable_names, LLVM.name(val))
+                end
+            end
+            internalize!(pm, non_internalizable_names)
+        end
 
         add!(pm, ModulePass("LowerThrow", lower_throw!))
         add!(pm, FunctionPass("HideUnreachable", hide_unreachable!))

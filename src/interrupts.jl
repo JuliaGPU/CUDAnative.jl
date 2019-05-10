@@ -214,7 +214,8 @@ macro cuda_interruptible(handler, ex...)
             GC.@preserve $(vars...) begin
                 # Define a trivial buffer that contains the interrupt state.
                 local interrupt_buffer = CUDAdrv.Mem.alloc(CUDAdrv.Mem.HostBuffer, sizeof(ready), CUDAdrv.Mem.HOSTALLOC_DEVICEMAP)
-                unsafe_store!(Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer), ready)
+                local interrupt_pointer = Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer)
+                unsafe_store!(interrupt_pointer, ready)
                 local device_interrupt_pointer = Base.unsafe_convert(CuPtr{UInt32}, interrupt_buffer)
 
                 try
@@ -241,7 +242,7 @@ macro cuda_interruptible(handler, ex...)
                     kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
                     # Handle interrupts.
-                    handle_interrupts($(esc(handler)), pointer(interrupt_buffer), $(esc(stream)))
+                    handle_interrupts($(esc(handler)), interrupt_pointer, $(esc(stream)))
                 finally
                     CUDAdrv.Mem.free(interrupt_buffer)
                 end

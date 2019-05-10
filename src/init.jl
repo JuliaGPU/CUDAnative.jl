@@ -61,8 +61,9 @@ function device!(dev::CuDevice)
     ctx = get!(device_contexts, dev) do
         pctx = CuPrimaryContext(dev)
         CuContext(pctx)
+        pop!(CuContext) # we don't maintain a stack...
     end
-    activate(ctx)
+    activate(ctx)       # replace the top of the stack
 
     for listener in device!_listeners
         listener(dev, device_contexts[dev])
@@ -77,23 +78,38 @@ Reset the CUDA state associated with a device. This call with release the underl
 context, at which point any objects allocated in that context will be invalidated.
 """
 function device_reset!(dev::CuDevice=device())
-    # invalidate compiled kernels
-    ctx = device_contexts[dev]
-    for id in collect(keys(compilecache))
-        kernel = compilecache[id]
-        if kernel.ctx == ctx
-            delete!(compilecache, id)
-        end
+    active_ctx = CuCurrentContext()
+    if active_ctx == nothing
+        active_dev = nothing
+    else
+        active_dev = device(active_ctx)
     end
 
-    delete!(device_contexts, dev)
+    if haskey(device_contexts, dev)
+        # invalidate compiled kernels
+        ctx = device_contexts[dev]
+        for id in collect(keys(compilecache))
+            kernel = compilecache[id]
+            if kernel.ctx == ctx
+                delete!(compilecache, id)
+            end
+        end
 
+        delete!(device_contexts, dev)
+    end
+
+    # unconditionally reset the primary context,
+    # as there might be users outside of CUDAnative.jl
     pctx = CuPrimaryContext(dev)
     unsafe_reset!(pctx)
 
-    # unless the user switches devices, new API calls should trigger initialization
-    CUDAdrv.apicall_hook[] = maybe_initialize
-    initialized[] = false
+    if dev == active_dev
+        # unless the user switches devices, new API calls should trigger initialization
+        CUDAdrv.apicall_hook[] = maybe_initialize
+        initialized[] = false
+    end
+
+    return
 end
 
 """
@@ -116,6 +132,7 @@ end
 device!(f::Function, dev::Integer) = device!(f, CuDevice(dev))
 
 function __init__()
+    __init_compiler__()
     configured || return
 
     if CUDAdrv.version() != cuda_driver_version
@@ -123,5 +140,4 @@ function __init__()
     end
 
     CUDAdrv.apicall_hook[] = maybe_initialize
-    __init_compiler__()
 end
