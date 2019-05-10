@@ -20,9 +20,9 @@ end
 end
 
 function stream_benchmark()
-    source_array = Mem.alloc(Float64, StreamQueries.input_size)
-    Mem.upload!(source_array, rand(Float64, StreamQueries.input_size))
-    destination_array = Mem.alloc(Float64, StreamQueries.thread_count)
+    source_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float64) * StreamQueries.input_size)
+    upload!(source_array, rand(Float64, StreamQueries.input_size))
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float64) * StreamQueries.thread_count)
     source_pointer = Base.unsafe_convert(CuPtr{Float64}, source_array)
     destination_pointer = Base.unsafe_convert(CuPtr{Float64}, destination_array)
     @cuda_sync threads=StreamQueries.thread_count StreamQueries.kernel(source_pointer, destination_pointer)

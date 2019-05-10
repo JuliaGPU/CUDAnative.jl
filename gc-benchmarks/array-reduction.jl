@@ -31,13 +31,13 @@ end
 end
 
 function array_reduction_benchmark()
-    destination_array = Mem.alloc(Float64, ArrayReduction.thread_count)
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float64) * ArrayReduction.thread_count)
     destination_pointer = Base.unsafe_convert(CuPtr{Float64}, destination_array)
 
     # Run the kernel.
     @cuda_sync threads=ArrayReduction.thread_count ArrayReduction.kernel(destination_pointer)
 
-    @test Mem.download(Float64, destination_array, ArrayReduction.thread_count) ≈ ArrayReduction.runs .* fill(Float64(pi), ArrayReduction.thread_count)
+    @test download(Float64, destination_array, ArrayReduction.thread_count) ≈ ArrayReduction.runs .* fill(Float64(pi), ArrayReduction.thread_count)
 end
 
 @cuda_benchmark "array reduction" array_reduction_benchmark()

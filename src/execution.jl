@@ -180,7 +180,8 @@ macro cuda(ex...)
                 GC.@preserve $(vars...) begin
                     # Define a trivial buffer that contains the interrupt state.
                     local interrupt_buffer = CUDAdrv.Mem.alloc(CUDAdrv.Mem.HostBuffer, sizeof(ready), CUDAdrv.Mem.HOSTALLOC_DEVICEMAP)
-                    unsafe_store!(Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer), ready)
+                    local interrupt_pointer = Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer)
+                    unsafe_store!(interrupt_pointer, ready)
                     local device_interrupt_pointer = Base.unsafe_convert(CuPtr{UInt32}, interrupt_buffer)
 
                     # Evaluate the GC configuration.
@@ -234,7 +235,7 @@ macro cuda(ex...)
                             kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
                             # Handle interrupts.
-                            handle_interrupts(handle_interrupt, pointer(interrupt_buffer), $(esc(stream)))
+                            handle_interrupts(handle_interrupt, interrupt_pointer, $(esc(stream)))
                         end
                     finally
                         CUDAdrv.Mem.free(interrupt_buffer)
@@ -555,11 +556,10 @@ if VERSION >= v"1.2.0-DEV.512"
         ccall("extern cudanativeCompileKernel", llvmcall, Ptr{Cvoid}, (Int,), id)
 else
     import Base.Sys: WORD_SIZE
-    @eval @inline cudanativeCompileKernel(id::Int) =
-        Base.llvmcall(
-            ($"declare i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE)",
-             $"%rv = call i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE %0)
-               ret i$WORD_SIZE %rv"), Ptr{Cvoid}, Tuple{Int}, id)
+    @eval @inline cudanativeCompileKernel(id::Int) = Base.llvmcall(
+        $("declare i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE)",
+          "%rv = call i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE %0)
+           ret i$WORD_SIZE %rv"), Ptr{Cvoid}, Tuple{Int}, id)
 end
 
 const delayed_cufunctions = Vector{Tuple{Core.Function,Type}}()

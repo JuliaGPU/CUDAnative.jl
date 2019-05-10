@@ -48,6 +48,16 @@ end
 const element_count = 2000
 const thread_count = 32
 
+function upload!(destination, source)
+    Mem.copy!(destination, pointer(source), sizeof(source))
+end
+
+function download(::Type{T}, source, dims) where T
+    result = Array{T}(undef, dims)
+    Mem.copy!(pointer(result), source, sizeof(result))
+    result
+end
+
 function kernel(elements::CUDAnative.DevicePtr{Int64}, results::CUDAnative.DevicePtr{Int64})
     i = (blockIdx().x-1) * blockDim().x + threadIdx().x
     l = List{Int64}(elements, element_count)
@@ -56,14 +66,14 @@ function kernel(elements::CUDAnative.DevicePtr{Int64}, results::CUDAnative.Devic
 end
 
 # Allocate two arrays.
-source_array = Mem.alloc(Int64, element_count)
-destination_array = Mem.alloc(Int64, thread_count)
+source_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * element_count)
+destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * thread_count)
 source_pointer = Base.unsafe_convert(CuPtr{Int64}, source_array)
 destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
 # Fill the source and destination arrays.
-Mem.upload!(source_array, Array(1:element_count))
-Mem.upload!(destination_array, zeros(Int64, thread_count))
+upload!(source_array, Array(1:element_count))
+upload!(destination_array, zeros(Int64, thread_count))
 
 # Run the kernel.
 if use_gc
@@ -75,4 +85,4 @@ else
 end
 println(stats)
 
-@test Mem.download(Int64, destination_array, thread_count) == repeat([sum(1:element_count)], thread_count)
+@test download(Int64, destination_array, thread_count) == repeat([sum(1:element_count)], thread_count)

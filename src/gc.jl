@@ -1636,7 +1636,7 @@ end
 
 # Expands a GC arena by assigning it an additional heap region.
 function gc_expand(arena::Ptr{FreeListArena}, region::GCHeapRegion)
-    extra_record = make_gc_block!(pointer(region), sizeof(region))
+    extra_record = make_gc_block!(pointer(region), Csize_t(sizeof(region)))
     last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
     iterate_free(arena) do record
         last_free_list_ptr = @get_field_pointer(record, :next)

@@ -37,7 +37,7 @@ end
 end
 
 function matrix_benchmark()
-    destination_array = Mem.alloc(Int64, Matrix.thread_count)
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * Matrix.thread_count)
     destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
     @cuda_sync threads=Matrix.thread_count Matrix.kernel(destination_pointer)
 end

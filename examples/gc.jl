@@ -9,6 +9,16 @@ end
     Base.pointer_from_objref(val)
 end
 
+function upload!(destination, source)
+    Mem.copy!(destination, pointer(source), sizeof(source))
+end
+
+function download(::Type{T}, source, dims) where T
+    result = Array{T}(undef, dims)
+    Mem.copy!(pointer(result), source, sizeof(result))
+    result
+end
+
 # Define a kernel that copies values using a temporary struct.
 function kernel(a::CUDAnative.DevicePtr{Float32}, b::CUDAnative.DevicePtr{Float32})
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
@@ -32,16 +42,16 @@ end
 thread_count = 256
 
 # Allocate two arrays.
-source_array = Mem.alloc(Float32, thread_count)
-destination_array = Mem.alloc(Float32, thread_count)
+source_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float32) * thread_count)
+destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float32) * thread_count)
 source_pointer = Base.unsafe_convert(CuPtr{Float32}, source_array)
 destination_pointer = Base.unsafe_convert(CuPtr{Float32}, destination_array)
 
 # Fill the source and destination arrays.
-Mem.upload!(source_array, fill(42.f0, thread_count))
-Mem.upload!(destination_array, zeros(Float32, thread_count))
+upload!(source_array, fill(42.f0, thread_count))
+upload!(destination_array, zeros(Float32, thread_count))
 
 # Run the kernel.
 @cuda gc=true threads=thread_count kernel(source_pointer, destination_pointer)
 
-@test Mem.download(Float32, destination_array, thread_count) == fill(42.f0, thread_count)
+@test download(Float32, destination_array, thread_count) == fill(42.f0, thread_count)

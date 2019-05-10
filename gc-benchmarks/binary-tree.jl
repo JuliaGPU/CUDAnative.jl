@@ -150,19 +150,19 @@ function bintree_benchmark()
     test_sequence = Array(1:(BinaryTree.thread_count * BinaryTree.tests_per_thread))
 
     # Allocate two arrays.
-    source_array = Mem.alloc(Int64, length(number_set))
-    destination_array = Mem.alloc(Int64, length(test_sequence))
+    source_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * length(number_set))
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * length(test_sequence))
     source_pointer = Base.unsafe_convert(CuPtr{Int64}, source_array)
     destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
     # Fill the source and destination arrays.
-    Mem.upload!(source_array, number_set)
-    Mem.upload!(destination_array, test_sequence)
+    upload!(source_array, number_set)
+    upload!(destination_array, test_sequence)
 
     # Run the kernel.
     @cuda_sync threads=BinaryTree.thread_count BinaryTree.kernel(source_pointer, destination_pointer)
 
-    @test Mem.download(Int64, destination_array, length(test_sequence)) == ([Int64(x in number_set) for x in test_sequence])
+    @test download(Int64, destination_array, length(test_sequence)) == ([Int64(x in number_set) for x in test_sequence])
 end
 
 @cuda_benchmark "binary tree" bintree_benchmark()

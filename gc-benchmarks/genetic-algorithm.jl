@@ -150,7 +150,7 @@ end
 end
 
 function genetic_benchmark()
-    destination_array = Mem.alloc(Float64, GeneticAlgorithm.thread_count)
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Float64) * GeneticAlgorithm.thread_count)
     destination_pointer = Base.unsafe_convert(CuPtr{Float64}, destination_array)
     @cuda_sync threads=GeneticAlgorithm.thread_count GeneticAlgorithm.kernel(destination_pointer)
 end

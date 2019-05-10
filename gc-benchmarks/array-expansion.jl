@@ -34,13 +34,13 @@ end
 end
 
 function array_expansion_benchmark()
-    destination_array = Mem.alloc(Int, ArrayExpansion.thread_count)
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int) * ArrayExpansion.thread_count)
     destination_pointer = Base.unsafe_convert(CuPtr{Int}, destination_array)
 
     # Run the kernel.
     @cuda_sync threads=ArrayExpansion.thread_count ArrayExpansion.kernel(destination_pointer)
 
-    @test Mem.download(Int, destination_array, ArrayExpansion.thread_count) == fill(ArrayExpansion.runs * sum(1:ArrayExpansion.array_length), ArrayExpansion.thread_count)
+    @test download(Int, destination_array, ArrayExpansion.thread_count) == fill(ArrayExpansion.runs * sum(1:ArrayExpansion.array_length), ArrayExpansion.thread_count)
 end
 
 @cuda_benchmark "array expansion" array_expansion_benchmark()

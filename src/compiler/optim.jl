@@ -1,6 +1,6 @@
 # LLVM IR optimization
 
-function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; internalize::Bool=true)
+function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     tm = machine(job.cap, triple(mod))
 
     if job.kernel
@@ -10,26 +10,6 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function; int
     function initialize!(pm)
         add_library_info!(pm, triple(mod))
         add_transform_info!(pm, tm)
-        if internalize
-            # We want to internalize functions so we can optimize
-            # them, but we don't really want to internalize globals
-            # because doing so may cause multiple copies of the same
-            # globals to appear after linking together modules.
-            #
-            # For example, the runtime library includes GC-related globals.
-            # It is imperative that these globals are shared by all modules,
-            # but if they are internalized before they are linked then
-            # they will actually not be internalized.
-            #
-            # Also, don't internalize the entry point, for obvious reasons.
-            non_internalizable_names = [LLVM.name(entry)]
-            for val in globals(mod)
-                if isa(val, LLVM.GlobalVariable)
-                    push!(non_internalizable_names, LLVM.name(val))
-                end
-            end
-            internalize!(pm, non_internalizable_names)
-        end
     end
 
     global current_job
@@ -282,7 +262,6 @@ function wrap_entry!(job::CompilerJob, mod::LLVM.Module, entry_f::LLVM.Function)
     fixup_metadata!(entry_f)
     ModulePassManager() do pm
         always_inliner!(pm)
-        verifier!(pm)
         run!(pm, mod)
     end
 

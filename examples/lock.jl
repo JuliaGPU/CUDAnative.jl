@@ -19,20 +19,28 @@ function increment_counter(counter::CUDAnative.DevicePtr{Int32}, lock_state::CUD
     return
 end
 
+function upload!(destination, source)
+    Mem.copy!(destination, pointer(source), sizeof(source))
+end
+
+function download(::Type{T}, source, dims) where T
+    result = Array{T}(undef, dims)
+    Mem.copy!(pointer(result), source, sizeof(result))
+    result
+end
+
 # Allocate memory for the counter and the lock.
-counter_buf = Mem.alloc(sizeof(Int32))
-Mem.upload!(counter_buf, [Int32(0)])
+counter_buf = Mem.alloc(Mem.DeviceBuffer, sizeof(Int32))
+upload!(counter_buf, [Int32(0)])
 counter_pointer = Base.unsafe_convert(CuPtr{Int32}, counter_buf)
 
-lock_buf = Mem.alloc(sizeof(CUDAnative.MutexState))
-Mem.upload!(lock_buf, [CUDAnative.MutexState(0)])
+lock_buf = Mem.alloc(Mem.DeviceBuffer, sizeof(CUDAnative.MutexState))
+upload!(lock_buf, [CUDAnative.MutexState(0)])
 lock_pointer = Base.unsafe_convert(CuPtr{CUDAnative.MutexState}, lock_buf)
-
-# @device_code_warntype increment_counter(counter_pointer, lock_pointer)
 
 # Run the kernel.
 @cuda threads=thread_count increment_counter(counter_pointer, lock_pointer)
 
 # Check that the counter's final value equals the number
 # of threads.
-@test Mem.download(Int32, counter_buf) == [Int32(total_count)]
+@test download(Int32, counter_buf) == [Int32(total_count)]

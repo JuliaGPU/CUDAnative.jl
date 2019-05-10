@@ -117,7 +117,7 @@ function kernel(result::CUDAnative.DevicePtr{Int64})
     return
 end
 
-destination_array = Mem.alloc(Int64, thread_count)
+destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * thread_count)
 destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
 if use_gc

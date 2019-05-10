@@ -100,20 +100,20 @@ end
 
 function linkedlist_benchmark()
     # Allocate two arrays.
-    source_array = Mem.alloc(Int64, LinkedList.element_count)
-    destination_array = Mem.alloc(Int64, LinkedList.thread_count)
+    source_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * LinkedList.element_count)
+    destination_array = Mem.alloc(Mem.DeviceBuffer, sizeof(Int64) * LinkedList.thread_count)
     source_pointer = Base.unsafe_convert(CuPtr{Int64}, source_array)
     destination_pointer = Base.unsafe_convert(CuPtr{Int64}, destination_array)
 
     # Fill the source and destination arrays.
-    Mem.upload!(source_array, Array(1:LinkedList.element_count))
-    Mem.upload!(destination_array, zeros(Int64, LinkedList.thread_count))
+    upload!(source_array, Array(1:LinkedList.element_count))
+    upload!(destination_array, zeros(Int64, LinkedList.thread_count))
 
     # Run the kernel.
     @cuda_sync threads=LinkedList.thread_count LinkedList.kernel(source_pointer, destination_pointer)
 
     # Verify the kernel's output.
-    @test Mem.download(Int64, destination_array, LinkedList.thread_count) == repeat([sum(1:LinkedList.element_count)], LinkedList.thread_count)
+    @test download(Int64, destination_array, LinkedList.thread_count) == repeat([sum(1:LinkedList.element_count)], LinkedList.thread_count)
 end
 
 @cuda_benchmark "linked list" linkedlist_benchmark()
