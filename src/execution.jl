@@ -188,10 +188,10 @@ macro cuda(ex...)
                     local gc_config = $(esc(config))
 
                     # Allocate a shared buffer for GC memory.
-                    local gc_memory_size = initial_heap_size(gc_config, $(esc(thread_count)))
+                    local gc_memory_size = initial_heap_size(gc_config, prod($(esc(thread_count))))
                     local gc_heap = GCHeapDescription()
                     expand!(gc_heap, gc_memory_size)
-                    local master_record = gc_init!(gc_heap, gc_config, $(esc(thread_count)))
+                    local master_record = gc_init!(gc_heap, gc_config, prod($(esc(thread_count))))
 
                     # Define a kernel initialization function.
                     local function kernel_init(kernel)
