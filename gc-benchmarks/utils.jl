@@ -42,7 +42,7 @@ end
 macro cuda_sync(args...)
     esc(quote
         if should_use_gc()
-            CUDAnative.@cuda_gc $(args...)
+            CUDAnative.@cuda_gc gc_config=gc_config $(args...)
         else
             @sync CUDAnative.@cuda $(args...)
         end
@@ -55,11 +55,19 @@ function register_cuda_benchmark(f, name, config)
     suite[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1 seconds=90
 end
 
+const MiB = 1 << 20
+
 macro cuda_benchmark(name, ex)
     esc(quote
-        suite[$name] = BenchmarkTools.BenchmarkGroup(["gc", "nogc"])
+        suite[$name] = BenchmarkTools.BenchmarkGroup(["gc", "gc-shared", "nogc"])
         register_cuda_benchmark($name, "gc") do
             global use_gc = true
+            global gc_config = GCConfiguration(local_arena_count=8, local_arena_initial_size=MiB, global_arena_initial_size=2 * MiB)
+            $(ex)
+        end
+        register_cuda_benchmark($name, "gc-shared") do
+            global use_gc = true
+            global gc_config = GCConfiguration(local_arena_count=0, global_arena_initial_size=10 * MiB)
             $(ex)
         end
         register_cuda_benchmark($name, "nogc") do
