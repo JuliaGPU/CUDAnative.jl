@@ -9,48 +9,6 @@ import CUDAdrv: @apicall
 
 export @cuda_interruptible, interrupt, interrupt_or_wait, wait_for_interrupt
 
-# Allocates an array of host memory that is page-locked and accessible
-# to the device. Maps the allocation into the CUDA address space.
-# Returns a host array that can be turned into a device array by calling
-# the `get_shared_device_buffer` function.
-function alloc_shared_array(dims::Tuple{Vararg{Int64, N}}, init::T)::Array{T, N} where {T, N}
-    # Allocate memory that is accessible to both the host and the device.
-    bytesize = prod(dims) * sizeof(T)
-    ptr_ref = Ref{Ptr{Cvoid}}()
-    @apicall(
-        :cuMemAllocHost,
-        (Ptr{Ptr{Cvoid}}, Csize_t),
-        ptr_ref, bytesize)
-
-    # Wrap the memory in an array.
-    host_array = Base.unsafe_wrap(Array{T, N}, Ptr{T}(ptr_ref[]), dims; own = false)
-
-    # Initialize the array's contents.
-    fill!(host_array, init)
-
-    return host_array
-end
-
-# Gets the device array that corresponds to a shared host array.
-# NOTE: this function only works for arrays that were allocated by
-# `alloc_shared_array`. It has undefined behavior for all other arrays.
-function get_shared_device_buffer(shared_array::Array{T, N})::Mem.Buffer where {T, N}
-    bytesize = length(shared_array) * sizeof(T)
-    CUDAdrv.Mem.Buffer(
-        convert(CuPtr{T}, convert(Csize_t, pointer(shared_array, 1))),
-        bytesize,
-        CuCurrentContext())
-end
-
-# Frees an array of host memory.
-function free_shared_array(shared_array::Array{T, N}) where {T, N}
-    ptr = pointer(shared_array, 1)
-    @apicall(
-        :cuMemFreeHost,
-        (Ptr{Cvoid},),
-        ptr)
-end
-
 # Queries a stream for its status.
 function query_stream(stream::CUDAdrv.CuStream = CuDefaultStream())::Cint
     return ccall(
@@ -255,8 +213,9 @@ macro cuda_interruptible(handler, ex...)
         quote
             GC.@preserve $(vars...) begin
                 # Define a trivial buffer that contains the interrupt state.
-                local host_array = alloc_shared_array((1,), ready)
-                local device_buffer = get_shared_device_buffer(host_array)
+                local interrupt_buffer = CUDAdrv.Mem.alloc(CUDAdrv.Mem.HostBuffer, sizeof(ready), CUDAdrv.Mem.HOSTALLOC_DEVICEMAP)
+                unsafe_store!(Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer), ready)
+                local device_interrupt_pointer = Base.unsafe_convert(CuPtr{UInt32}, interrupt_buffer)
 
                 try
                     # Define a kernel initialization function that sets the
@@ -264,7 +223,7 @@ macro cuda_interruptible(handler, ex...)
                     local function interrupt_kernel_init(kernel)
                         try
                             global_handle = CuGlobal{CuPtr{UInt32}}(kernel.mod, "interrupt_pointer")
-                            set(global_handle, CuPtr{UInt32}(device_buffer.ptr))
+                            set(global_handle, device_interrupt_pointer)
                         catch exception
                             # The interrupt pointer may not have been declared (because it is unused).
                             # In that case, we should do nothing.
@@ -282,9 +241,9 @@ macro cuda_interruptible(handler, ex...)
                     kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
                     # Handle interrupts.
-                    handle_interrupts($(esc(handler)), pointer(host_array, 1), $(esc(stream)))
+                    handle_interrupts($(esc(handler)), pointer(interrupt_buffer), $(esc(stream)))
                 finally
-                    free_shared_array(host_array)
+                    CUDAdrv.Mem.free(interrupt_buffer)
                 end
             end
          end)

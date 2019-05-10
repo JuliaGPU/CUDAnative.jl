@@ -179,8 +179,9 @@ macro cuda(ex...)
             quote
                 GC.@preserve $(vars...) begin
                     # Define a trivial buffer that contains the interrupt state.
-                    local host_interrupt_array = alloc_shared_array((1,), ready)
-                    local device_interrupt_buffer = get_shared_device_buffer(host_interrupt_array)
+                    local interrupt_buffer = CUDAdrv.Mem.alloc(CUDAdrv.Mem.HostBuffer, sizeof(ready), CUDAdrv.Mem.HOSTALLOC_DEVICEMAP)
+                    unsafe_store!(Base.unsafe_convert(Ptr{UInt32}, interrupt_buffer), ready)
+                    local device_interrupt_pointer = Base.unsafe_convert(CuPtr{UInt32}, interrupt_buffer)
 
                     # Evaluate the GC configuration.
                     local gc_config = $(esc(config))
@@ -196,7 +197,7 @@ macro cuda(ex...)
                         # Set the interrupt state pointer.
                         try
                             global_handle = CuGlobal{CuPtr{UInt32}}(kernel.mod, "interrupt_pointer")
-                            set(global_handle, CuPtr{UInt32}(device_interrupt_buffer.ptr))
+                            set(global_handle, device_interrupt_pointer)
                         catch exception
                             # The interrupt pointer may not have been declared (because it is unused).
                             # In that case, we should do nothing.
@@ -233,10 +234,10 @@ macro cuda(ex...)
                             kernel(kernel_args...; $(map(esc, call_kwargs)...))
 
                             # Handle interrupts.
-                            handle_interrupts(handle_interrupt, pointer(host_interrupt_array, 1), $(esc(stream)))
+                            handle_interrupts(handle_interrupt, pointer(interrupt_buffer), $(esc(stream)))
                         end
                     finally
-                        free_shared_array(host_interrupt_array)
+                        CUDAdrv.Mem.free(interrupt_buffer)
                         free!(gc_heap)
                     end
                     gc_report

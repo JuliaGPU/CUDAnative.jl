@@ -1135,16 +1135,7 @@ const MiB = 1 << 20
 const tiny_arena_starvation_threshold = 0 # 2 * MiB
 
 # A description of a region of memory that has been allocated to the GC heap.
-struct GCHeapRegion
-    # A buffer that contains the GC region's bytes.
-    buffer::Array{UInt8, 1}
-    # A pointer to the first element in the region.
-    start::Ptr{UInt8}
-    # The region's size in bytes.
-    size::Csize_t
-end
-
-GCHeapRegion(buffer::Array{UInt8, 1}) = GCHeapRegion(buffer, pointer(buffer, 1), Csize_t(length(buffer)))
+const GCHeapRegion = CUDAdrv.Mem.HostBuffer
 
 # A description of all memory that has been allocated to the GC heap.
 struct GCHeapDescription
@@ -1228,8 +1219,8 @@ function gc_init!(
 
     master_region = heap.regions[1]
 
-    gc_memory_start_ptr = master_region.start
-    gc_memory_end_ptr = master_region.start + master_region.size
+    gc_memory_start_ptr = pointer(master_region)
+    gc_memory_end_ptr = pointer(master_region) + sizeof(master_region)
 
     # Allocate a local arena pointer buffer.
     local_arenas_bytesize = sizeof(Ptr{LocalArena}) * config.local_arena_count
@@ -1397,7 +1388,7 @@ end
 # Tells if a GC heap contains a particular pointer.
 function contains(heap::GCHeapDescription, pointer::Ptr{T}) where T
     for region in heap.regions
-        if pointer >= region.start && pointer < region.start + region.size
+        if pointer >= pointer(region) && pointer < pointer(region) + sizeof(region)
             return true
         end
     end
@@ -1408,8 +1399,7 @@ end
 # the list of allocated regions. `size` describes the amount of bytes to
 # allocate. Returns the allocated region.
 function expand!(heap::GCHeapDescription, size::Integer)::GCHeapRegion
-    buffer = alloc_shared_array((size,), UInt8(0))
-    region = GCHeapRegion(buffer)
+    region = CUDAdrv.Mem.alloc(CUDAdrv.Mem.HostBuffer, size, CUDAdrv.Mem.HOSTALLOC_DEVICEMAP)
     push!(heap.regions, region)
     return region
 end
@@ -1417,7 +1407,7 @@ end
 # Frees all memory allocated by a GC heap.
 function free!(heap::GCHeapDescription)
     for region in heap.regions
-        free_shared_array(region.buffer)
+        CUDAdrv.Mem.free(region)
     end
 end
 
@@ -1646,7 +1636,7 @@ end
 
 # Expands a GC arena by assigning it an additional heap region.
 function gc_expand(arena::Ptr{FreeListArena}, region::GCHeapRegion)
-    extra_record = make_gc_block!(region.start, region.size)
+    extra_record = make_gc_block!(pointer(region), sizeof(region))
     last_free_list_ptr = @get_field_pointer(arena, :free_list_head)
     iterate_free(arena) do record
         last_free_list_ptr = @get_field_pointer(record, :next)
