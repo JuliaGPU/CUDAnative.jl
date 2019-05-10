@@ -131,7 +131,7 @@ function genetic_algo(seed::Int)::Character
     end
 
     # Run the genetic algorithm for a few iterations.
-    for j in 1:10
+    for j in 1:2
         individuals = step(individuals, generator)
     end
 

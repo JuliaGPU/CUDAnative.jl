@@ -86,7 +86,7 @@ end
 const thread_count = 256
 
 function kernel()
-    block = create_range_sum_block(50)
+    block = create_range_sum_block(25)
     fold_constants(block)
     return
 end
