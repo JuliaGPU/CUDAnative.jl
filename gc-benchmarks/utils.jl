@@ -45,7 +45,14 @@ macro cuda_sync(args...)
         if mode == "gc"
             CUDAnative.@cuda gc=true gc_config=gc_config $(args...)
         elseif mode == "bump"
-            @sync CUDAnative.@cuda init=(k -> CUDAnative.Runtime.bump_alloc_init!(k, 60 * MiB)) malloc="ptx_bump_alloc" $(args...)
+            local capacity = 60 * MiB
+            local buf = Mem.alloc(Mem.DeviceBuffer, capacity)
+            local start_address = pointer(buf)
+            local function init(kernel)
+                CUDAnative.Runtime.bump_alloc_init!(kernel, start_address, capacity)
+            end
+            @sync CUDAnative.@cuda init=init malloc="ptx_bump_alloc" $(args...)
+            Mem.free(buf)
         else
             @sync CUDAnative.@cuda $(args...)
         end

@@ -317,17 +317,9 @@ function maybe_set_global(kernel, name, value::T) where T
     end
 end
 
-function bump_alloc_init!(kernel, capacity)
-    buf = Mem.alloc(Mem.DeviceBuffer, capacity)
-    start_address = pointer(buf)
-    end_address = start_address + capacity
-    maybe_set_global(kernel, "bump_alloc_ptr", start_address)
-    maybe_set_global(kernel, "bump_alloc_end", end_address)
-    return start_address
-end
-
-function bump_alloc_finalize!(kernel, ptr)
-    Mem.free(ptr)
+function bump_alloc_init!(kernel, buffer_start, buffer_size)
+    maybe_set_global(kernel, "bump_alloc_ptr", buffer_start)
+    maybe_set_global(kernel, "bump_alloc_end", buffer_start + buffer_size)
 end
 
 ## Arrays
