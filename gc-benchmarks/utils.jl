@@ -1,10 +1,10 @@
 import BenchmarkTools
 
-function should_use_gc()
+function get_gc_mode()
     try
-        return use_gc
+        return gc_mode
     catch ex
-        return true
+        return "gc"
     end
 end
 
@@ -41,8 +41,11 @@ end
 
 macro cuda_sync(args...)
     esc(quote
-        if should_use_gc()
+        local mode = get_gc_mode()
+        if mode == "gc"
             CUDAnative.@cuda gc=true gc_config=gc_config $(args...)
+        elseif mode == "bump"
+            @sync CUDAnative.@cuda init=(k -> CUDAnative.Runtime.bump_alloc_init!(k, 60 * MiB)) malloc="ptx_bump_alloc" $(args...)
         else
             @sync CUDAnative.@cuda $(args...)
         end
@@ -52,26 +55,30 @@ end
 suite = BenchmarkTools.BenchmarkGroup()
 
 function register_cuda_benchmark(f, name, config)
-    suite[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1 seconds=90
+    suite[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1
 end
 
 const MiB = 1 << 20
 
 macro cuda_benchmark(name, ex)
     esc(quote
-        suite[$name] = BenchmarkTools.BenchmarkGroup(["gc", "gc-shared", "nogc"])
+        suite[$name] = BenchmarkTools.BenchmarkGroup(["gc", "gc-shared", "nogc", "bump"])
         register_cuda_benchmark($name, "gc") do
-            global use_gc = true
+            global gc_mode = "gc"
             global gc_config = GCConfiguration(local_arena_count=8, local_arena_initial_size=MiB, global_arena_initial_size=2 * MiB)
             $(ex)
         end
         register_cuda_benchmark($name, "gc-shared") do
-            global use_gc = true
+            global gc_mode = "gc"
             global gc_config = GCConfiguration(local_arena_count=0, global_arena_initial_size=10 * MiB)
             $(ex)
         end
         register_cuda_benchmark($name, "nogc") do
-            global use_gc = false
+            global gc_mode = "nogc"
+            $(ex)
+        end
+        register_cuda_benchmark($name, "bump") do
+            global gc_mode = "bump"
             $(ex)
         end
     end)
