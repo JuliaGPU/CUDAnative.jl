@@ -156,7 +156,7 @@ end
 end
 
 function gc_pool_alloc(sz::Csize_t)
-    ptr = malloc(sz)
+    ptr = managed_malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
