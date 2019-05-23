@@ -106,3 +106,13 @@ function next(generator::LinearCongruentialGenerator, lower::Int, upper::Int)::I
 end
 
 end
+
+function upload!(destination, source)
+    Mem.copy!(destination, pointer(source), sizeof(source))
+end
+
+function download(::Type{T}, source, dims) where T
+    result = Array{T}(undef, dims)
+    Mem.copy!(pointer(result), source, sizeof(result))
+    result
+end
