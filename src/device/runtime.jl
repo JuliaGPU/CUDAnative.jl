@@ -12,6 +12,7 @@ module Runtime
 using ..CUDAnative
 using LLVM
 using LLVM.Interop
+using CUDAdrv
 
 import ..CUDAnative: GCFrame
 ## representation of a runtime method instance
@@ -285,6 +286,49 @@ compile(
 # Also import the safepoint and perma-safepoint functions.
 compile(CUDAnative.gc_safepoint, Cvoid, ())
 compile(CUDAnative.gc_perma_safepoint, Cvoid, ())
+
+## Bump allocator.
+
+# Allocates `bytesize` bytes of storage by bumping the global bump
+# allocator pointer.
+function bump_alloc(bytesize::Csize_t)::Ptr{UInt8}
+    ptr = CUDAnative.@cuda_global_ptr("bump_alloc_ptr", Csize_t)
+    chunk_address = CUDAnative.atomic_add!(ptr, bytesize)
+    end_ptr = unsafe_load(CUDAnative.@cuda_global_ptr("bump_alloc_end", Csize_t))
+    if chunk_address < end_ptr
+        return Ptr{UInt8}(chunk_address)
+    else
+        return C_NULL
+    end
+end
+
+compile(bump_alloc, Ptr{UInt8}, (Csize_t,))
+
+function maybe_set_global(kernel, name, value::T) where T
+    try
+        global_handle = CuGlobal{T}(kernel.mod, name)
+        set(global_handle, value)
+    catch exception
+        # The interrupt pointer may not have been declared (because it is unused).
+        # In that case, we should do nothing.
+        if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
+            rethrow()
+        end
+    end
+end
+
+function bump_alloc_init!(kernel, capacity)
+    buf = Mem.alloc(Mem.DeviceBuffer, capacity)
+    start_address = pointer(buf)
+    end_address = start_address + capacity
+    maybe_set_global(kernel, "bump_alloc_ptr", start_address)
+    maybe_set_global(kernel, "bump_alloc_end", end_address)
+    return start_address
+end
+
+function bump_alloc_finalize!(kernel, ptr)
+    Mem.free(ptr)
+end
 
 ## Arrays
 
