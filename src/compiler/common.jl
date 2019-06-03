@@ -27,11 +27,7 @@ current_job = nothing
 
 
 function signature(job::CompilerJob)
-    if job.name === nothing
-        fn = typeof(job.f).name.mt.name
-    else
-        fn = job.name
-    end
+    fn = job.name === nothing ? String(nameof(job.f)) : job.name
     args = join(job.tt.parameters, ", ")
     return "$fn($(join(job.tt.parameters, ", ")))"
 end

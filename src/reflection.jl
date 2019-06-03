@@ -282,7 +282,7 @@ Evaluates the expression `ex` and dumps all intermediate forms of code to the di
 macro device_code(ex...)
     only(xs) = (@assert length(xs) == 1; first(xs))
     function hook(job::CompilerJob; dir::AbstractString)
-        fn = "$(typeof(job.f).name.mt.name)_$(globalUnique+1)"
+        fn = "$(nameof(job.f))_$(globalUnique+1)"
         mkpath(dir)
 
         open(joinpath(dir, "$fn.lowered.jl"), "w") do io

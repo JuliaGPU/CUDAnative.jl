@@ -12,7 +12,7 @@ end
 
 # make function names safe for PTX
 safe_fn(fn::String) = replace(fn, r"[^A-Za-z0-9_]"=>"_")
-safe_fn(f::Core.Function) = safe_fn(String(typeof(f).name.mt.name))
+safe_fn(f::Core.Function) = safe_fn(String(nameof(f)))
 safe_fn(f::LLVM.Function) = safe_fn(LLVM.name(f))
 
 # generate a pseudo-backtrace from a stack of methods being emitted
