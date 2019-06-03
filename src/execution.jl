@@ -343,7 +343,7 @@ The output of this function is automatically cached, i.e. you can simply call `c
 in a hot path without degrading performance. New code will be generated automatically, when
 when function changes, or when different types or keyword arguments are provided.
 """
-@generated function cufunction(f::Core.Function, tt::Type=Tuple{}; kwargs...)
+@generated function cufunction(f::Core.Function, tt::Type=Tuple{}; name=nothing, kwargs...)
     tt = Base.to_tuple_type(tt.parameters[1])
     sig = Base.signature_type(f, tt)
     t = Tuple(tt.parameters)
@@ -375,13 +375,14 @@ when function changes, or when different types or keyword arguments are provided
         if !haskey(compilecache, key)
             dev = device(ctx)
             cap = supported_capability(dev)
-            fun, mod = compile(:cuda, cap, f, tt; kwargs...)
+            fun, mod = compile(:cuda, cap, f, tt; name=name, kwargs...)
             kernel = HostKernel{f,tt}(ctx, mod, fun)
             @debug begin
                 ver = version(kernel)
                 mem = memory(kernel)
                 reg = registers(kernel)
-                """Compiled $f to PTX $(ver.ptx) for SM $(ver.binary) using $reg registers.
+                fn = something(name, nameof(f))
+                """Compiled $fn to PTX $(ver.ptx) for SM $(ver.binary) using $reg registers.
                    Memory usage: $(Base.format_bytes(mem.local)) local, $(Base.format_bytes(mem.shared)) shared, $(Base.format_bytes(mem.constant)) constant"""
             end
             compilecache[key] = kernel
