@@ -211,7 +211,11 @@ function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world)
     end
 
     # rename the entry point
-    llvmfn = replace(LLVM.name(entry), r"_\d+$"=>"")
+    name = LLVM.name(entry)
+    if job.name !== nothing
+        name = safe_fn(job.name)
+    end
+    llvmfn = replace(name, r"_\d+$"=>"")
     ## append a global unique counter
     global globalUnique
     globalUnique += 1

@@ -12,11 +12,12 @@ struct CompilerJob
     maxthreads::Union{Nothing,CuDim}
     blocks_per_sm::Union{Nothing,Integer}
     maxregs::Union{Nothing,Integer}
+    name::Union{Nothing,String}
 
-    CompilerJob(f, tt, cap, kernel;
+    CompilerJob(f, tt, cap, kernel; name=nothing,
                     minthreads=nothing, maxthreads=nothing,
                     blocks_per_sm=nothing, maxregs=nothing) =
-        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs)
+        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs, name)
 end
 
 # global job reference
@@ -26,7 +27,11 @@ current_job = nothing
 
 
 function signature(job::CompilerJob)
-    fn = typeof(job.f).name.mt.name
+    if job.name === nothing
+        fn = typeof(job.f).name.mt.name
+    else
+        fn = job.name
+    end
     args = join(job.tt.parameters, ", ")
     return "$fn($(join(job.tt.parameters, ", ")))"
 end
