@@ -338,7 +338,7 @@ The following keyword arguments are supported:
   multiprocessor
 - `maxregs`: the maximum number of registers to be allocated to a single thread (only
   supported on LLVM 4.0+)
-- `name`: the name of the kernel entry function, if non provided this is `nameof(f)`
+- `name`: override the name that the kernel will have in the generated code
 
 The output of this function is automatically cached, i.e. you can simply call `cufunction`
 in a hot path without degrading performance. New code will be generated automatically, when
