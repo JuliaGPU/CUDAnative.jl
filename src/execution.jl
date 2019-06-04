@@ -9,7 +9,7 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # the code it generates, or the execution
 function split_kwargs(kwargs)
     macro_kws    = [:dynamic]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name]
     call_kws     = [:cooperative, :blocks, :threads, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
@@ -338,6 +338,7 @@ The following keyword arguments are supported:
   multiprocessor
 - `maxregs`: the maximum number of registers to be allocated to a single thread (only
   supported on LLVM 4.0+)
+- `name`: the name of the kernel entry function, if non provided this is `nameof(f)`
 
 The output of this function is automatically cached, i.e. you can simply call `cufunction`
 in a hot path without degrading performance. New code will be generated automatically, when
@@ -367,6 +368,7 @@ when function changes, or when different types or keyword arguments are provided
         ctx = CuCurrentContext()
         key = hash(age, $precomp_key)
         key = hash(ctx, key)
+        key = hash(name, key)
         key = hash(kwargs, key)
         for nf in 1:nfields(f)
             # mix in the values of any captured variable
