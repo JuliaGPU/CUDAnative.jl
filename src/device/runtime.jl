@@ -407,19 +407,18 @@ function array_resize_buffer(a::Array1D, newlen::Csize_t)::Bool
 end
 
 """
-    jl_array_grow_at(a, idx, inc, n)
+    jl_array_grow_at_impl(a, idx, inc, n)
 
 Grows array `a` containing `n` elements by `inc` elements at index `idx`.
 """
-function jl_array_grow_at(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
+function jl_array_grow_at_impl(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
     data = a.data
     elsz = Csize_t(a.elsize)
     reqmaxsize = a.offset + n + inc
     has_gap = n > idx
+    nb1 = idx * elsz
+    nbinc = inc * elsz
     if reqmaxsize > a.maxsize
-        nb1 = idx * elsz
-        nbinc = inc * elsz
-
         if reqmaxsize < 4
             newmaxsize = Csize_t(4)
         elseif reqmaxsize >= a.maxsize * 2
@@ -439,18 +438,42 @@ function jl_array_grow_at(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
             memmove!(newdata + nb1 + nbinc, newdata + nb1, n * elsz - nb1)
         end
         a.data = data = newdata
+    elseif has_gap
+        memmove!(data + nb1 + nbinc, data + nb1, n * elsz - nb1)
     end
 
     newnrows = n + inc
     a.length = newnrows
     a.nrows = newnrows
-    zero_fill!(data + idx * elsz, inc * elsz)
+    zero_fill!(data + nb1, nbinc)
     return
 end
 
+"""
+    jl_array_grow_at(a, idx, inc)
+
+Grows array `a` by `inc` elements at index `idx`.
+"""
+function jl_array_grow_at(a::Array1D, idx::Cssize_t, inc::Csize_t)
+    jl_array_grow_at_impl(a, Csize_t(idx), inc, a.nrows)
+    return
+end
+
+compile(
+    jl_array_grow_at,
+    Cvoid,
+    (Array1D, Cssize_t, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Cssize_t), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_grow_end(a, inc)
+
+Grows array `a` by `inc` elements at the end.
+"""
 function jl_array_grow_end(a::Array1D, inc::Csize_t)
     n = a.nrows
-    jl_array_grow_at(a, n, inc, n)
+    jl_array_grow_at_impl(a, n, inc, n)
     return
 end
 
