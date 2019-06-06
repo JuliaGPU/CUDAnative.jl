@@ -530,4 +530,62 @@ compile(
     () -> convert(LLVMType, Cvoid),
     () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
 
+"""
+    jl_array_del_at_impl(a, idx, dec, n)
+
+Removes a range of elements from array `a`.
+"""
+function jl_array_del_at_impl(a::Array1D, idx::Csize_t, dec::Csize_t, n::Csize_t)
+    data = a.data
+    elsz = a.elsize
+    last = idx + dec
+    if n > last
+        memmove!(data + idx * elsz, data + last * elsz, (n - last) * elsz)
+    end
+    n -= dec
+    if elsz == 1
+        Base.unsafe_store!(data, n + 1, UInt8(0))
+    end
+    a.nrows = n
+    a.length = n
+    return
+end
+
+function jl_array_del_beg(a::Array1D, dec::Csize_t)
+    jl_array_del_at_impl(a, Csize_t(0), dec, a.nrows)
+    return
+end
+
+compile(
+    jl_array_del_beg,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+function jl_array_del_end(a::Array1D, dec::Csize_t)
+    n = a.nrows
+    jl_array_del_at_impl(a, n, dec, n)
+    return
+end
+
+compile(
+    jl_array_del_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+function jl_array_del_at(a::Array1D, idx::Cssize_t, dec::Csize_t)
+    jl_array_del_at_impl(a, Csize_t(idx), dec, a.nrows)
+    return
+end
+
+compile(
+    jl_array_del_at,
+    Cvoid,
+    (Array1D, Cssize_t, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Cssize_t), convert(LLVMType, Csize_t)])
+
 end

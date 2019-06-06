@@ -942,6 +942,15 @@ end
 # Lowers function calls that pertain to array operations.
 function lower_array_calls!(fun::LLVM.Function, malloc)
     changed_any = false
+    runtime_methods = [
+        :jl_array_grow_at,
+        :jl_array_grow_beg,
+        :jl_array_grow_end,
+        :jl_array_del_at,
+        :jl_array_del_beg,
+        :jl_array_del_end,
+        :jl_array_sizehint
+    ]
     visit_literal_pointer_calls(fun) do call, name
         args = collect(operands(call))[1:end - 1]
         if name == :jl_alloc_array_1d
@@ -959,7 +968,7 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 end
             end
             changed_any = true
-        elseif name in [:jl_array_grow_at, :jl_array_grow_beg, :jl_array_grow_end, :jl_array_sizehint]
+        elseif name in runtime_methods
             let builder = Builder(JuliaContext())
                 position!(builder, call)
                 new_call = call!(builder, Runtime.get(name), args)
