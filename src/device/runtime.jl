@@ -406,7 +406,12 @@ function array_resize_buffer(a::Array1D, newlen::Csize_t)::Bool
     return true
 end
 
-function jl_array_grow_at_end(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
+"""
+    jl_array_grow_at(a, idx, inc, n)
+
+Grows array `a` containing `n` elements by `inc` elements at index `idx`.
+"""
+function jl_array_grow_at(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
     data = a.data
     elsz = Csize_t(a.elsize)
     reqmaxsize = a.offset + n + inc
@@ -445,12 +450,40 @@ end
 
 function jl_array_grow_end(a::Array1D, inc::Csize_t)
     n = a.nrows
-    jl_array_grow_at_end(a, n, inc, n)
+    jl_array_grow_at(a, n, inc, n)
     return
 end
 
 compile(
     jl_array_grow_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_sizehint(a, sz)
+
+Suggest that collection `a` reserve capacity for at least `sz` elements.
+"""
+function jl_array_sizehint(a::Array1D, sz::Csize_t)
+    n = a.length
+    data = a.data
+    elsz = Csize_t(a.elsize)
+    reqmaxsize = a.offset + sz
+    if reqmaxsize > a.maxsize
+        newbuf = array_resize_buffer(a, reqmaxsize)
+        newdata = a.data + a.offset * elsz
+        if newbuf
+            memmove!(newdata, data, n * elsz)
+        end
+        a.data = data = newdata
+    end
+    return
+end
+
+compile(
+    jl_array_sizehint,
     Cvoid,
     (Array1D, Csize_t),
     () -> convert(LLVMType, Cvoid),
