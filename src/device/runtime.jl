@@ -367,7 +367,7 @@ function zero_fill!(ptr::Ptr{UInt8}, count::Integer)
 end
 
 function memmove!(dst::Ptr{UInt8}, src::Ptr{UInt8}, sz::Integer)
-    if src < dst
+    if dst < src
         for i in 1:sz
             unsafe_store!(dst, unsafe_load(src, i), i)
         end
@@ -376,6 +376,7 @@ function memmove!(dst::Ptr{UInt8}, src::Ptr{UInt8}, sz::Integer)
             unsafe_store!(dst, unsafe_load(src, i), i)
         end
     end
+    return
 end
 
 # Resize the buffer to a max size of `newlen`
@@ -479,6 +480,23 @@ end
 
 compile(
     jl_array_grow_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_grow_beg(a, inc)
+
+Grows array `a` by `inc` elements at the beginning of the array.
+"""
+function jl_array_grow_beg(a::Array1D, inc::Csize_t)
+    jl_array_grow_at_impl(a, Csize_t(0), inc, a.nrows)
+    return
+end
+
+compile(
+    jl_array_grow_beg,
     Cvoid,
     (Array1D, Csize_t),
     () -> convert(LLVMType, Cvoid),

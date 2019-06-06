@@ -959,7 +959,7 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 end
             end
             changed_any = true
-        elseif name in [:jl_array_grow_end, :jl_array_grow_at, :jl_array_sizehint]
+        elseif name in [:jl_array_grow_at, :jl_array_grow_beg, :jl_array_grow_end, :jl_array_sizehint]
             let builder = Builder(JuliaContext())
                 position!(builder, call)
                 new_call = call!(builder, Runtime.get(name), args)
