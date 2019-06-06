@@ -3,6 +3,7 @@ using CUDAdrv, CUDAnative, Test
 include("utils.jl")
 
 include("array-expansion.jl")
+include("array-features.jl")
 include("array-reduction.jl")
 include("arrays.jl")
 include("binary-tree.jl")
