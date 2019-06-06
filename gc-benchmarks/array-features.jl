@@ -2,7 +2,7 @@ module ArrayFeatures
 
 using CUDAdrv, CUDAnative
 
-# This benchmark has every thread exercise the entire low-level
+# This benchmark has every thread exercise the core low-level
 # array API.
 
 const thread_count = 256
