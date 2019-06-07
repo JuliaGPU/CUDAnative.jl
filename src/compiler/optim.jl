@@ -942,6 +942,11 @@ end
 # Lowers function calls that pertain to array operations.
 function lower_array_calls!(fun::LLVM.Function, malloc)
     changed_any = false
+    alloc_methods = [
+        :jl_alloc_array_1d,
+        :jl_alloc_array_2d,
+        :jl_alloc_array_3d
+    ]
     runtime_methods = [
         :jl_array_grow_at,
         :jl_array_grow_beg,
@@ -953,7 +958,7 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
     ]
     visit_literal_pointer_calls(fun) do call, name
         args = collect(operands(call))[1:end - 1]
-        if name == :jl_alloc_array_1d
+        if name in alloc_methods
             is_ptr, array_type_ptr = to_literal_pointer(args[1])
             if is_ptr
                 # We can lower array creation calls if we know the type
@@ -961,7 +966,7 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 array_type = unsafe_pointer_to_objref(array_type_ptr)
                 let builder = Builder(JuliaContext())
                     position!(builder, call)
-                    new_array = new_array!(builder, malloc, array_type, (args[2],))
+                    new_array = new_array!(builder, malloc, array_type, Tuple(args[2:end]))
                     replace_uses!(call, new_array)
                     unsafe_delete!(LLVM.parent(call), call)
                     dispose(builder)

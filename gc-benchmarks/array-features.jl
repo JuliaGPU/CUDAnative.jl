@@ -9,6 +9,7 @@ const thread_count = 256
 
 # Creates an array of Fibonacci numbers.
 function fib_array(count::Integer)
+    # Calls `jl_alloc_array_1d`.
     result = [1, 1]
     # Calls `jl_array_sizehint`.
     sizehint!(result, count + 2)
@@ -25,6 +26,14 @@ function intersperse_with!(vec::Vector{T}, value::T) where T
         insert!(vec, i * 2, value)
     end
     return vec
+end
+
+function iterative_sum(array)
+    result = 0
+    for i in array
+        result += i
+    end
+    return result
 end
 
 function manipulate_array()
@@ -49,11 +58,13 @@ function manipulate_array()
     # Delete some other element (calls `jl_array_del_at`).
     deleteat!(arr, 8)
 
-    result = 0
-    for i in arr
-        result += i
-    end
-    return result
+    # Create a two-dimensional array (calls `jl_alloc_array_2d`).
+    arr_2d = fill(2, (2, 2))
+
+    # Create a three-dimensional array (calls `jl_alloc_array_3d`).
+    arr_3d = fill(2, (2, 2, 2))
+
+    return iterative_sum(arr) + iterative_sum(arr_2d) + iterative_sum(arr_3d)
 end
 
 function kernel(destination)
