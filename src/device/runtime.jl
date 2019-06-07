@@ -410,7 +410,8 @@ end
 """
     jl_array_grow_at_impl(a, idx, inc, n)
 
-Grows array `a` containing `n` elements by `inc` elements at index `idx`.
+Grows one-dimensional array `a` containing `n` elements by `inc` elements at
+zero-based index `idx`.
 """
 function jl_array_grow_at_impl(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
     data = a.data
@@ -453,7 +454,7 @@ end
 """
     jl_array_grow_at(a, idx, inc)
 
-Grows array `a` by `inc` elements at index `idx`.
+Grows one-dimensional array `a` by `inc` elements at zero-based index `idx`.
 """
 function jl_array_grow_at(a::Array1D, idx::Cssize_t, inc::Csize_t)
     jl_array_grow_at_impl(a, Csize_t(idx), inc, a.nrows)
@@ -470,7 +471,7 @@ compile(
 """
     jl_array_grow_end(a, inc)
 
-Grows array `a` by `inc` elements at the end.
+Grows one-dimensional array `a` by `inc` elements at the end.
 """
 function jl_array_grow_end(a::Array1D, inc::Csize_t)
     n = a.nrows
@@ -488,7 +489,7 @@ compile(
 """
     jl_array_grow_beg(a, inc)
 
-Grows array `a` by `inc` elements at the beginning of the array.
+Grows one-dimensional array `a` by `inc` elements at the beginning of the array.
 """
 function jl_array_grow_beg(a::Array1D, inc::Csize_t)
     jl_array_grow_at_impl(a, Csize_t(0), inc, a.nrows)
@@ -505,7 +506,7 @@ compile(
 """
     jl_array_sizehint(a, sz)
 
-Suggest that collection `a` reserve capacity for at least `sz` elements.
+Suggest that one-dimensional array `a` reserve capacity for at least `sz` elements.
 """
 function jl_array_sizehint(a::Array1D, sz::Csize_t)
     n = a.length
@@ -533,7 +534,8 @@ compile(
 """
     jl_array_del_at_impl(a, idx, dec, n)
 
-Removes a range of elements from array `a`.
+Removes `dec` elements from one-dimensional array `a`, starting at zero-based index `idx`.
+`n` is the number of elements in `a`.
 """
 function jl_array_del_at_impl(a::Array1D, idx::Csize_t, dec::Csize_t, n::Csize_t)
     data = a.data
@@ -551,6 +553,11 @@ function jl_array_del_at_impl(a::Array1D, idx::Csize_t, dec::Csize_t, n::Csize_t
     return
 end
 
+"""
+    jl_array_del_beg(a, dec)
+
+Removes `dec` elements from the beginning of one-dimensional array `a`.
+"""
 function jl_array_del_beg(a::Array1D, dec::Csize_t)
     jl_array_del_at_impl(a, Csize_t(0), dec, a.nrows)
     return
@@ -563,6 +570,11 @@ compile(
     () -> convert(LLVMType, Cvoid),
     () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
 
+"""
+    jl_array_del_end(a, dec)
+
+Removes `dec` elements from the end of one-dimensional array `a`.
+"""
 function jl_array_del_end(a::Array1D, dec::Csize_t)
     n = a.nrows
     jl_array_del_at_impl(a, n, dec, n)
@@ -576,6 +588,12 @@ compile(
     () -> convert(LLVMType, Cvoid),
     () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
 
+
+"""
+    jl_array_del_at(a, idx, dec)
+
+Removes `dec` elements from one-dimensional array `a`, starting at zero-based index `idx`.
+"""
 function jl_array_del_at(a::Array1D, idx::Cssize_t, dec::Csize_t)
     jl_array_del_at_impl(a, Csize_t(idx), dec, a.nrows)
     return
