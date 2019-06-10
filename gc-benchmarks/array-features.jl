@@ -67,7 +67,19 @@ function manipulate_array()
     # Create a four-dimensional array (calls `jl_new_array`).
     arr_4d = fill(2, (2, 2, 2, 2))
 
-    return iterative_sum(arr) + iterative_sum(arr_2d) + iterative_sum(arr_3d) + iterative_sum(arr_4d)
+    # Create an alias for the Fibonacci array (this is dangerous, but we
+    # know what we're doing here; calls `jl_ptr_to_array_1d`).
+    alias = unsafe_wrap(Array, pointer(arr), length(arr))
+
+    # Create an alias for `arr_2d` (calls `jl_ptr_to_array`).
+    alias_2d = unsafe_wrap(Array, pointer(arr_2d), size(arr_2d))
+
+    return iterative_sum(arr) +
+        iterative_sum(arr_2d) +
+        iterative_sum(arr_3d) +
+        iterative_sum(arr_4d) +
+        iterative_sum(alias) +
+        iterative_sum(alias_2d)
 end
 
 function kernel(destination)

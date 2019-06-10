@@ -775,7 +775,7 @@ end
 # Emits instructions that create a new array. The array's element type
 # must be statically known. Its dimensions are represented as a tuple
 # of LLVM IR values. A pointer to the new array is returned.
-function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple)
+function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple; data_ptr::Union{Nothing,LLVM.Value} = nothing)
     # Since time immemorial, the structure of an array is (quoting from the
     # Julia source code here):
     #
@@ -859,7 +859,9 @@ function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple
     # Actually allocate the array's contents. We will just always
     # use a separate buffer. Inline data storage is wasteful and
     # harder to implement.
-    data_ptr = new_bytes!(builder, malloc, data_bytesize)
+    if data_ptr == nothing
+        data_ptr = new_bytes!(builder, malloc, data_bytesize)
+    end
 
     # The pointer to the array's data is the first field of the struct.
     push!(fields, data_ptr)
@@ -966,7 +968,7 @@ function extract_array_dims!(builder, ::Type{Array{T, N}}, dims_tuple) where {T,
             address = gep!(
                 builder,
                 tuple_as_size_t,
-                [LLVM.ConstantInt(convert(LLVMType, Int32), i)])
+                [LLVM.ConstantInt(convert(LLVMType, Int32), i - 1)])
 
             push!(results, load!(builder, address))
         end
@@ -982,6 +984,10 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
         :jl_alloc_array_2d,
         :jl_alloc_array_3d,
         :jl_new_array
+    ]
+    wrap_methods = [
+        :jl_ptr_to_array,
+        :jl_ptr_to_array_1d
     ]
     runtime_methods = [
         :jl_array_grow_at,
@@ -1014,8 +1020,28 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                     unsafe_delete!(LLVM.parent(call), call)
                     dispose(builder)
                 end
+                changed_any = true
             end
-            changed_any = true
+        elseif name in wrap_methods
+            is_ptr, array_type_ptr = to_literal_pointer(args[1])
+            if is_ptr
+                # We can lower array wrapping calls if we know the type
+                # of the array to create in advance.
+                array_type = unsafe_pointer_to_objref(array_type_ptr)
+                let builder = Builder(JuliaContext())
+                    position!(builder, call)
+                    if name == :jl_ptr_to_array
+                        dim_args = extract_array_dims!(builder, array_type, args[3])
+                    else
+                        dim_args = (args[3],)
+                    end
+                    new_array = new_array!(builder, malloc, array_type, dim_args; data_ptr=args[2])
+                    replace_uses!(call, new_array)
+                    unsafe_delete!(LLVM.parent(call), call)
+                    dispose(builder)
+                end
+                changed_any = true
+            end
         elseif name in runtime_methods
             let builder = Builder(JuliaContext())
                 position!(builder, call)
@@ -1024,6 +1050,7 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 unsafe_delete!(LLVM.parent(call), call)
                 dispose(builder)
             end
+            changed_any = true
         end
     end
     return changed_any
