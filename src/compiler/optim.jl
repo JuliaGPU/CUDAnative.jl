@@ -939,13 +939,49 @@ function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple
     return obj_ptr
 end
 
+# Generates code that extracts array dimensions from a tuple argument.
+function extract_array_dims!(builder, ::Type{Array{T, N}}, dims_tuple) where {T, N}
+    # First cast the tuple value to a size_t pointer in address space zero.
+    tuple_as_size_t = bitcast!(
+        builder,
+        addrspacecast!(
+            builder,
+            dims_tuple,
+            LLVM.PointerType(eltype(llvmtype(dims_tuple)))),
+        LLVM.PointerType(convert(LLVMType, Csize_t)))
+
+    is_literal, ptr = to_literal_pointer(tuple_as_size_t)
+
+    results = []
+    if is_literal
+        # If the tuple is implemented as a literal pointer, then we want to load its elements
+        # ahead of time; the device won't be able to access host-allocated constants.
+        for i in 1:N
+            value = Base.unsafe_load(Base.unsafe_convert(Ptr{Csize_t}, ptr), i)
+            push!(results, LLVM.ConstantInt(convert(LLVMType, Csize_t), value))
+        end
+    else
+        # Otherwise, generate code that loads fields from the tuple.
+        for i in 1:N
+            address = gep!(
+                builder,
+                tuple_as_size_t,
+                [LLVM.ConstantInt(convert(LLVMType, Int32), i)])
+
+            push!(results, load!(builder, address))
+        end
+    end
+    return Tuple(results)
+end
+
 # Lowers function calls that pertain to array operations.
 function lower_array_calls!(fun::LLVM.Function, malloc)
     changed_any = false
     alloc_methods = [
         :jl_alloc_array_1d,
         :jl_alloc_array_2d,
-        :jl_alloc_array_3d
+        :jl_alloc_array_3d,
+        :jl_new_array
     ]
     runtime_methods = [
         :jl_array_grow_at,
@@ -966,7 +1002,14 @@ function lower_array_calls!(fun::LLVM.Function, malloc)
                 array_type = unsafe_pointer_to_objref(array_type_ptr)
                 let builder = Builder(JuliaContext())
                     position!(builder, call)
-                    new_array = new_array!(builder, malloc, array_type, Tuple(args[2:end]))
+                    if name == :jl_new_array
+                        # jl_new_array requires special treatment. All the other ones are
+                        # pretty simple to handle.
+                        dim_args = extract_array_dims!(builder, array_type, args[2])
+                    else
+                        dim_args = Tuple(args[2:end])
+                    end
+                    new_array = new_array!(builder, malloc, array_type, dim_args)
                     replace_uses!(call, new_array)
                     unsafe_delete!(LLVM.parent(call), call)
                     dispose(builder)

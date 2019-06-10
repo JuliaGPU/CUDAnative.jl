@@ -64,7 +64,10 @@ function manipulate_array()
     # Create a three-dimensional array (calls `jl_alloc_array_3d`).
     arr_3d = fill(2, (2, 2, 2))
 
-    return iterative_sum(arr) + iterative_sum(arr_2d) + iterative_sum(arr_3d)
+    # Create a four-dimensional array (calls `jl_new_array`).
+    arr_4d = fill(2, (2, 2, 2, 2))
+
+    return iterative_sum(arr) + iterative_sum(arr_2d) + iterative_sum(arr_3d) + iterative_sum(arr_4d)
 end
 
 function kernel(destination)
