@@ -74,17 +74,26 @@ function manipulate_array()
     # Create an alias for `arr_2d` (calls `jl_ptr_to_array`).
     alias_2d = unsafe_wrap(Array, pointer(arr_2d), size(arr_2d))
 
+    # Create an array that is similar to `arr_3d` and fill it with constants.
+    # This does not call any new low-level functions, but it does illustrate
+    # that high-level functions such as `similar` and `fill!` fully functional.
+    arr_3d_sim = similar(arr_3d)
+    fill!(arr_3d_sim, 10)
+
     return iterative_sum(arr) +
         iterative_sum(arr_2d) +
         iterative_sum(arr_3d) +
         iterative_sum(arr_4d) +
         iterative_sum(alias) +
-        iterative_sum(alias_2d)
+        iterative_sum(alias_2d) +
+        iterative_sum(arr_3d_sim)
 end
 
 function kernel(destination)
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    unsafe_store!(destination, manipulate_array(), i)
+    for j in 1:3
+        unsafe_store!(destination, manipulate_array(), i)
+    end
     return
 end
 
