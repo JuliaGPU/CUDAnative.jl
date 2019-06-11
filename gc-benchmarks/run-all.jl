@@ -1,4 +1,4 @@
-using CUDAdrv, CUDAnative, Test
+using CUDAdrv, CUDAnative, Test, Statistics
 
 include("utils.jl")
 
@@ -41,11 +41,20 @@ end
 open("gc-heap-sizes.csv", "w") do file
     ratio_tags = [t * "-ratio" for t in gc_tags]
     write(file, "benchmark,$(join(gc_tags, ',')),$(join(ratio_tags, ','))\n")
+    all_times = [[] for t in gc_tags]
+    all_normalized_times = [[] for t in gc_tags]
     for key in sort([k for k in keys(results)])
         runs = results[key]
         median_times = BenchmarkTools.median(runs)
         times = [median_times[t].time / 1e6 for t in gc_tags]
+        for (l, val) in zip(all_times, times)
+            push!(l, val)
+        end
         normalized_times = [median_times[t].time / median_times["gc"].time for t in gc_tags]
+        for (l, val) in zip(all_normalized_times, normalized_times)
+            push!(l, val)
+        end
         write(file, "$key,$(join(times, ',')),$(join(normalized_times, ','))\n")
     end
+    write(file, "mean,$(join(map(mean, all_times), ',')),$(join(map(mean, all_normalized_times), ','))\n")
 end
