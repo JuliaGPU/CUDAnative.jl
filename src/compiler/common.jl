@@ -22,12 +22,13 @@ struct CompilerJob
     # is used when this field is `true`; the latter when it is
     # `false`.
     gc::Bool
+    name::Union{Nothing,String}
 
-    CompilerJob(f, tt, cap, kernel;
+    CompilerJob(f, tt, cap, kernel; name=nothing,
                     minthreads=nothing, maxthreads=nothing,
                     blocks_per_sm=nothing, maxregs=nothing,
                     malloc="malloc",gc=false) =
-        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs, malloc, gc)
+        new(f, tt, cap, kernel, minthreads, maxthreads, blocks_per_sm, maxregs, malloc, gc, name)
 end
 
 # global job reference
@@ -37,7 +38,7 @@ current_job = nothing
 
 
 function signature(job::CompilerJob)
-    fn = typeof(job.f).name.mt.name
+    fn = something(job.name, nameof(job.f))
     args = join(job.tt.parameters, ", ")
     return "$fn($(join(job.tt.parameters, ", ")))"
 end
@@ -89,9 +90,11 @@ function Base.showerror(io::IO, err::InternalCompilerError)
         end
     end
 
-    println(io, "\nInstalled packages:")
-    for (pkg,ver) in Pkg.installed()
-        println(io, " - $pkg = $ver")
+    let Pkg = Base.require(Base.PkgId(Base.UUID((0x44cfe95a1eb252ea, 0xb672e2afdf69b78f)), "Pkg"))
+        println(io, "\nInstalled packages:")
+        for (pkg,ver) in Pkg.installed()
+            println(io, " - $pkg = $(repr(ver))")
+        end
     end
 
     println(io)

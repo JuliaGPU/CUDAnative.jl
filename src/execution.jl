@@ -9,8 +9,8 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # the code it generates, or the execution
 function split_kwargs(kwargs)
     macro_kws    = [:dynamic, :init, :gc_config]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :malloc, :gc]
-    call_kws     = [:cooperative, :blocks, :threads, :shmem, :stream]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name, :malloc, :gc]
+    call_kws     = [:cooperative, :blocks, :threads, :config, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
     call_kwargs = []
@@ -310,6 +310,9 @@ The following keyword arguments are supported:
 - `threads` (defaults to 1)
 - `blocks` (defaults to 1)
 - `shmem` (defaults to 0)
+- `config`: callback function to dynamically compute the launch configuration.
+  should accept a `HostKernel` and return a name tuple with any of the above as fields.
+  this functionality is intended to be used in combination with the CUDA occupancy API.
 - `stream` (defaults to the default stream)
 """
 AbstractKernel
@@ -353,8 +356,13 @@ end
 
 @doc (@doc AbstractKernel) HostKernel
 
-@inline cudacall(kernel::HostKernel, tt, args...; kwargs...) =
-    CUDAdrv.cudacall(kernel.fun, tt, args...; kwargs...)
+@inline function cudacall(kernel::HostKernel, tt, args...; config=nothing, kwargs...)
+    if config !== nothing
+        CUDAdrv.cudacall(kernel.fun, tt, args...; kwargs..., config(kernel)...)
+    else
+        CUDAdrv.cudacall(kernel.fun, tt, args...; kwargs...)
+    end
+end
 
 """
     version(k::HostKernel)
@@ -422,12 +430,13 @@ The following keyword arguments are supported:
   multiprocessor
 - `maxregs`: the maximum number of registers to be allocated to a single thread (only
   supported on LLVM 4.0+)
+- `name`: override the name that the kernel will have in the generated code
 
 The output of this function is automatically cached, i.e. you can simply call `cufunction`
 in a hot path without degrading performance. New code will be generated automatically, when
 when function changes, or when different types or keyword arguments are provided.
 """
-@generated function cufunction(f::Core.Function, tt::Type=Tuple{}; kwargs...)
+@generated function cufunction(f::Core.Function, tt::Type=Tuple{}; name=nothing, kwargs...)
     tt = Base.to_tuple_type(tt.parameters[1])
     sig = Base.signature_type(f, tt)
     t = Tuple(tt.parameters)
@@ -451,6 +460,7 @@ when function changes, or when different types or keyword arguments are provided
         ctx = CuCurrentContext()
         key = hash(age, $precomp_key)
         key = hash(ctx, key)
+        key = hash(name, key)
         key = hash(kwargs, key)
         for nf in 1:nfields(f)
             # mix in the values of any captured variable
@@ -459,13 +469,14 @@ when function changes, or when different types or keyword arguments are provided
         if !haskey(compilecache, key)
             dev = device(ctx)
             cap = supported_capability(dev)
-            fun, mod = compile(:cuda, cap, f, tt; kwargs...)
+            fun, mod = compile(:cuda, cap, f, tt; name=name, kwargs...)
             kernel = HostKernel{f,tt}(ctx, mod, fun)
             @debug begin
                 ver = version(kernel)
                 mem = memory(kernel)
                 reg = registers(kernel)
-                """Compiled $f to PTX $(ver.ptx) for SM $(ver.binary) using $reg registers.
+                fn = something(name, nameof(f))
+                """Compiled $fn to PTX $(ver.ptx) for SM $(ver.binary) using $reg registers.
                    Memory usage: $(Base.format_bytes(mem.local)) local, $(Base.format_bytes(mem.shared)) shared, $(Base.format_bytes(mem.constant)) constant"""
             end
             compilecache[key] = kernel

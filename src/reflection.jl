@@ -213,7 +213,11 @@ macro device_code_typed(ex...)
     quote
         buf = Any[]
         function hook(job::CompilerJob)
-            append!(buf, code_typed(job.f, job.tt))
+            if VERSION >= v"1.1.0"
+                append!(buf, code_typed(job.f, job.tt, debuginfo=:source))
+            else
+                append!(buf, code_typed(job.f, job.tt))
+            end
         end
         $(emit_hooked_compilation(:hook, ex...))
         buf
@@ -282,7 +286,8 @@ Evaluates the expression `ex` and dumps all intermediate forms of code to the di
 macro device_code(ex...)
     only(xs) = (@assert length(xs) == 1; first(xs))
     function hook(job::CompilerJob; dir::AbstractString)
-        fn = "$(typeof(job.f).name.mt.name)_$(globalUnique+1)"
+        name = something(job.name, nameof(job.f))
+        fn = "$(name)_$(globalUnique+1)"
         mkpath(dir)
 
         open(joinpath(dir, "$fn.lowered.jl"), "w") do io
@@ -291,7 +296,11 @@ macro device_code(ex...)
         end
 
         open(joinpath(dir, "$fn.typed.jl"), "w") do io
-            code = only(code_typed(job.f, job.tt))
+            if VERSION >= v"1.1.0"
+                code = only(code_typed(job.f, job.tt, debuginfo=:source))
+            else
+                code = only(code_typed(job.f, job.tt))
+            end
             println(io, code)
         end
 

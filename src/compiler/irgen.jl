@@ -12,7 +12,7 @@ end
 
 # make function names safe for PTX
 safe_fn(fn::String) = replace(fn, r"[^A-Za-z0-9_]"=>"_")
-safe_fn(f::Core.Function) = safe_fn(String(typeof(f).name.mt.name))
+safe_fn(f::Core.Function) = safe_fn(String(nameof(f)))
 safe_fn(f::LLVM.Function) = safe_fn(LLVM.name(f))
 
 # generate a pseudo-backtrace from a stack of methods being emitted
@@ -20,6 +20,14 @@ function backtrace(job::CompilerJob, call_stack::Vector{Core.MethodInstance})
     bt = StackTraces.StackFrame[]
     for method_instance in call_stack
         method = method_instance.def
+        if method.name === :overdub && isdefined(method, :generator)
+            # The inline frames are maintained by the dwarf based backtrace, but here we only have the
+            # calls to overdub directly, the backtrace therefore is collapsed and we have to
+            # lookup the overdubbed function, but only if we likely are using the generated variant.
+            actual_sig = Tuple{method_instance.specTypes.parameters[3:end]...}
+            m = ccall(:jl_gf_invoke_lookup, Any, (Any, UInt), tt, typemax(UInt))
+            method = m.func::Method
+        end
         frame = StackTraces.StackFrame(method.name, method.file, method.line)
         pushfirst!(bt, frame)
     end
@@ -60,21 +68,24 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
 
         # find the function that this module defines
         llvmfs = filter(llvmf -> !isdeclaration(llvmf) &&
-                                 startswith(LLVM.name(llvmf), "julia_") &&
                                  linkage(llvmf) == LLVM.API.LLVMExternalLinkage,
                         collect(functions(ir)))
-        @compiler_assert length(llvmfs) == 1 job
-        llvmf = first(llvmfs)
+
+        llvmf = nothing
+        if length(llvmfs) == 1
+            llvmf = first(llvmfs)
+        elseif length(llvmfs) > 1
+            llvmfs = filter!(llvmf -> startswith(LLVM.name(llvmf), "julia_"), llvmfs)
+            if length(llvmfs) == 1
+                llvmf = first(llvmfs)
+            end
+        end
+
+        @compiler_assert llvmf !== nothing job
 
         insert!(dependencies, last_method_instance, llvmf)
     end
     function hook_emit_function(method_instance, code, world)
-        skip_verifier = false
-        if length(call_stack) >= 1
-            caller = last(call_stack)
-            skip_verifier = caller.def.name === :overdub
-        end
-
         push!(call_stack, method_instance)
 
         # check for recursion
@@ -82,9 +93,6 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
             throw(KernelError(job, "recursion is currently not supported";
                               bt=backtrace(job, call_stack)))
         end
-
-        # if last method on stack is overdub skip the Base check and trust in Cassette
-        skip_verifier && return
 
         # check for Base functions that exist in CUDAnative too
         # FIXME: this might be too coarse
@@ -211,7 +219,11 @@ function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world; in
     end
 
     # rename the entry point
-    llvmfn = replace(LLVM.name(entry), r"_\d+$"=>"")
+    if job.name !== nothing
+        llvmfn = safe_fn(string("julia_", job.name))
+    else
+        llvmfn = replace(LLVM.name(entry), r"_\d+$"=>"")
+    end
     ## append a global unique counter
     global globalUnique
     globalUnique += 1

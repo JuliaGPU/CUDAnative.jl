@@ -22,6 +22,24 @@ dummy() = return
 end
 
 
+@testset "launch configuration" begin
+    @cuda dummy()
+
+    @cuda threads=1 dummy()
+    @cuda threads=(1,1) dummy()
+    @cuda threads=(1,1,1) dummy()
+
+    @cuda blocks=1 dummy()
+    @cuda blocks=(1,1) dummy()
+    @cuda blocks=(1,1,1) dummy()
+
+    @cuda config=(kernel)->() dummy()
+    @cuda config=(kernel)->(threads=1,) dummy()
+    @cuda config=(kernel)->(blocks=1,) dummy()
+    @cuda config=(kernel)->(shmem=0,) dummy()
+end
+
+
 @testset "compilation params" begin
     @cuda dummy()
 
@@ -69,6 +87,18 @@ end
         end
         @test occursin("Body::Union{}", err)
     end
+
+    let
+        range_kernel() = (0.0:0.1:100.0; nothing)
+
+        @test_throws CUDAnative.InvalidIRError @cuda range_kernel()
+    end
+
+    # set name of kernel
+    @test occursin("ptxcall_mykernel", sprint(io->(@device_code_llvm io=io begin
+        k = cufunction(dummy, name="mykernel")
+        k()
+    end)))
 end
 
 
@@ -530,7 +560,11 @@ let (code, out, err) = julia_script(script, `-g2`)
     @test occursin("ERROR: CUDA error: an illegal instruction was encountered", err) ||
           occursin("ERROR: CUDA error: unspecified launch failure", err)
     @test occursin("ERROR: a exception was thrown during kernel execution", out)
-    @test occursin("[1] Type at float.jl", out)
+    if VERSION < v"1.3.0-DEV.270"
+        @test occursin("[1] Type at float.jl", out)
+    else
+        @test occursin("[1] Int64 at float.jl", out)
+    end
     @test occursin("[2] kernel at none:2", out)
 end
 
