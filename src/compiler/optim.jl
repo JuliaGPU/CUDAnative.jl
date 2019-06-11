@@ -19,7 +19,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     #
     # NOTE: we need to use multiple distinct pass managers to force pass ordering;
     #       intrinsics should never get lowered before Julia has optimized them.
-    if VERSION < v"1.2.0-DEV.375"
+    if VERSION < v"1.3.0-DEV.390"
         # with older versions of Julia, intrinsics are lowered unconditionally so we need to
         # replace them with GPU-compatible counterparts before anything else. that breaks
         # certain optimizations though: https://github.com/JuliaGPU/CUDAnative.jl/issues/340
@@ -44,7 +44,8 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
             initialize!(pm)
             ccall(:jl_add_optimization_passes, Cvoid,
                   (LLVM.API.LLVMPassManagerRef, Cint, Cint),
-                  LLVM.ref(pm), Base.JLOptions().opt_level, #=lower_intrinsics=# 1)
+                  LLVM.ref(pm), Base.JLOptions().opt_level, #=lower_intrinsics=# 0)
+            ccall(:LLVMExtraAddLateLowerGCFramePass, Cvoid, (LLVM.API.LLVMPassManagerRef,), LLVM.ref(pm))
             run!(pm, mod)
         end
 
@@ -61,11 +62,6 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
 
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
-
-            # the Julia GC lowering pass also has some clean-up that is required
-            if VERSION >= v"1.2.0-DEV.531"
-                late_lower_gc_frame!(pm)
-            end
 
             run!(pm, mod)
         end
