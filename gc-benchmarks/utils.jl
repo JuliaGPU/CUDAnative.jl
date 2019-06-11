@@ -78,14 +78,14 @@ benchmark_tags = [
 
 macro cuda_benchmark(name, ex)
     esc(quote
-        local function register_gc(config, heap_size)
+        local function register_gc_shared(config, heap_size)
             register_cuda_benchmark($name, config) do
                 global gc_mode = "gc"
                 global gc_config = GCConfiguration(local_arena_count=0, global_arena_initial_size=heap_size)
                 $(ex)
             end
         end
-        local function register_gc_shared(config, heap_size)
+        local function register_gc(config, heap_size)
             register_cuda_benchmark($name, config) do
                 global gc_mode = "gc"
                 local local_arena_initial_size = div(heap_size, 10)
