@@ -91,7 +91,7 @@ end
 
 function kernel(destination)
     i = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    for j in 1:3
+    for j in 1:2
         unsafe_store!(destination, manipulate_array(), i)
     end
     return

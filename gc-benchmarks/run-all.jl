@@ -24,7 +24,7 @@ gc_tags = [t for t in benchmark_tags if startswith(t, "gc")]
 # Also write them to a CSV for further analysis.
 open("strategies.csv", "w") do file
     write(file, "benchmark,nogc,gc,gc-shared,bump,nogc-ratio,gc-ratio,gc-shared-ratio,bump-ratio\n")
-    for key in sort([k for k in keys(results)])
+    for key in sort(collect(keys(results)))
         runs = results[key]
         median_times = BenchmarkTools.median(runs)
         gc_time = median_times["gc"].time / 1e6
@@ -43,7 +43,7 @@ open("gc-heap-sizes.csv", "w") do file
     write(file, "benchmark,$(join(gc_tags, ',')),$(join(ratio_tags, ','))\n")
     all_times = [[] for t in gc_tags]
     all_normalized_times = [[] for t in gc_tags]
-    for key in sort([k for k in keys(results)])
+    for key in sort(collect(keys(results)))
         runs = results[key]
         median_times = BenchmarkTools.median(runs)
         times = [median_times[t].time / 1e6 for t in gc_tags]
@@ -57,4 +57,46 @@ open("gc-heap-sizes.csv", "w") do file
         write(file, "$key,$(join(times, ',')),$(join(normalized_times, ','))\n")
     end
     write(file, "mean,$(join(map(mean, all_times), ',')),$(join(map(mean, all_normalized_times), ','))\n")
+end
+
+open("gc-heap-sizes-summary.csv", "w") do file
+    write(file, "heap,mean-opt,mean-shared\n")
+    shared = Dict()
+    sizes = Dict()
+    for tag in gc_tags
+        shared[tag] = false
+        sizes[tag] = 60.0
+        for part in split(tag, "-")
+            if endswith(part, "mb")
+                sizes[tag] = parse(Float64, part[1:end - 2])
+            elseif part == "shared"
+                shared[tag] = true
+            end
+        end
+    end
+
+    all_normalized_times = [[] for t in gc_tags]
+    for key in sort(collect(keys(results)))
+        runs = results[key]
+        median_times = BenchmarkTools.median(runs)
+        normalized_times = [median_times[t].time / median_times["gc"].time for t in gc_tags]
+        for (l, val) in zip(all_normalized_times, normalized_times)
+            push!(l, val)
+        end
+    end
+
+    unique_sizes = sort(unique(values(sizes)))
+    data = zeros(Float64, (2, length(unique_sizes)))
+    for (tag, vals) in zip(gc_tags, all_normalized_times)
+        if shared[tag]
+            shared_index = 2
+        else
+            shared_index = 1
+        end
+        size_index = indexin(sizes[tag], unique_sizes)[1]
+        data[shared_index, size_index] = mean(vals)
+    end
+    for i in 1:length(unique_sizes)
+        write(file, "$(unique_sizes[i]),$(data[1, i]),$(data[2, i])\n")
+    end
 end
