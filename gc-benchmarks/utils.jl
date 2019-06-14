@@ -1,4 +1,4 @@
-import BenchmarkTools
+import BenchmarkTools, JSON
 
 function get_gc_mode()
     try
@@ -59,25 +59,26 @@ macro cuda_sync(args...)
     end)
 end
 
-suite = BenchmarkTools.BenchmarkGroup()
+suites = Dict()
 
 function register_cuda_benchmark(f, name, config)
-    suite[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1
+    suites[name][config] = BenchmarkTools.@benchmarkable $f() setup=(set_malloc_heap_size(BENCHMARK_HEAP_SIZE); $f()) teardown=(device_reset!()) evals=1 seconds=90
 end
 
 const MiB = 1 << 20
 
 benchmark_tags = [
     "gc", "gc-shared",
+    "gc-45mb", "gc-shared-45mb",
     "gc-30mb", "gc-shared-30mb",
     "gc-15mb", "gc-shared-15mb",
-    "gc-7.5mb", "gc-shared-7.5mb",
-    "gc-3.75mb", "gc-shared-3.75mb",
+    "gc-10mb", "gc-shared-10mb",
     "nogc", "bump"
 ]
 
 macro cuda_benchmark(name, ex)
     esc(quote
+        local suite = BenchmarkTools.BenchmarkGroup()
         local function register_gc_shared(config, heap_size)
             register_cuda_benchmark($name, config) do
                 global gc_mode = "gc"
@@ -98,17 +99,17 @@ macro cuda_benchmark(name, ex)
             end
         end
 
-        suite[$name] = BenchmarkTools.BenchmarkGroup(benchmark_tags)
+        suites[$name] = BenchmarkTools.BenchmarkGroup(benchmark_tags)
         register_gc("gc", 60 * MiB)
         register_gc_shared("gc-shared", 60 * MiB)
+        register_gc("gc-45mb", 45 * MiB)
+        register_gc_shared("gc-shared-45mb", 45 * MiB)
         register_gc("gc-30mb", 30 * MiB)
         register_gc_shared("gc-shared-30mb", 30 * MiB)
         register_gc("gc-15mb", 15 * MiB)
         register_gc_shared("gc-shared-15mb", 15 * MiB)
-        register_gc("gc-7.5mb", div(15 * MiB, 2))
-        register_gc_shared("gc-shared-7.5mb", div(15 * MiB, 2))
-        register_gc("gc-3.75mb", div(15 * MiB, 4))
-        register_gc_shared("gc-shared-3.75mb", div(15 * MiB, 4))
+        register_gc("gc-10mb", 10 * MiB)
+        register_gc_shared("gc-shared-10mb", 10 * MiB)
         register_cuda_benchmark($name, "nogc") do
             global gc_mode = "nogc"
             $(ex)
@@ -121,7 +122,25 @@ macro cuda_benchmark(name, ex)
 end
 
 function run_benchmarks()
-    BenchmarkTools.run(suite)
+    cache_dir = mkpath("gc-benchmarks/results-cache")
+    results = Dict()
+    for (name, group) in pairs(suites)
+        cache_path = "$cache_dir/$(replace(name, " " => "-")).json"
+        if isfile(cache_path)
+            group_results = open(cache_path, "r") do file
+                JSON.parse(file)
+            end
+        else
+            runs = BenchmarkTools.run(group)
+            median_times = BenchmarkTools.median(runs)
+            group_results = Dict(k => r.time for (k, r) in pairs(median_times))
+            open(cache_path, "w") do file
+                JSON.print(file, group_results)
+            end
+        end
+        results[name] = group_results
+    end
+    return results
 end
 
 module CUDArandom

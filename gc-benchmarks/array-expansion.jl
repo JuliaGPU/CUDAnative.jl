@@ -7,7 +7,7 @@ using CUDAdrv, CUDAnative
 
 const thread_count = 256
 const array_length = 200
-const runs = 10
+const runs = 5
 
 function iterative_sum(elements::Array{T})::T where T
     result = zero(T)

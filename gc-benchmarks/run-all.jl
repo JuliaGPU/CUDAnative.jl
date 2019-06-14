@@ -4,7 +4,6 @@ include("utils.jl")
 
 include("array-expansion.jl")
 include("array-features.jl")
-include("array-reduction.jl")
 include("arrays.jl")
 include("binary-tree.jl")
 include("bitvector.jl")
@@ -26,11 +25,10 @@ open("strategies.csv", "w") do file
     write(file, "benchmark,nogc,gc,gc-shared,bump,nogc-ratio,gc-ratio,gc-shared-ratio,bump-ratio\n")
     for key in sort(collect(keys(results)))
         runs = results[key]
-        median_times = BenchmarkTools.median(runs)
-        gc_time = median_times["gc"].time / 1e6
-        gc_shared_time = median_times["gc-shared"].time / 1e6
-        nogc_time = median_times["nogc"].time / 1e6
-        bump_time = median_times["bump"].time / 1e6
+        gc_time = runs["gc"] / 1e6
+        gc_shared_time = runs["gc-shared"] / 1e6
+        nogc_time = runs["nogc"] / 1e6
+        bump_time = runs["bump"] / 1e6
         gc_ratio = gc_time / nogc_time
         gc_shared_ratio = gc_shared_time / nogc_time
         bump_ratio = bump_time / nogc_time
@@ -45,12 +43,11 @@ open("gc-heap-sizes.csv", "w") do file
     all_normalized_times = [[] for t in gc_tags]
     for key in sort(collect(keys(results)))
         runs = results[key]
-        median_times = BenchmarkTools.median(runs)
-        times = [median_times[t].time / 1e6 for t in gc_tags]
+        times = [runs[t] / 1e6 for t in gc_tags]
         for (l, val) in zip(all_times, times)
             push!(l, val)
         end
-        normalized_times = [median_times[t].time / median_times["gc"].time for t in gc_tags]
+        normalized_times = [runs[t] / runs["gc"] for t in gc_tags]
         for (l, val) in zip(all_normalized_times, normalized_times)
             push!(l, val)
         end
@@ -78,8 +75,7 @@ open("gc-heap-sizes-summary.csv", "w") do file
     all_normalized_times = [[] for t in gc_tags]
     for key in sort(collect(keys(results)))
         runs = results[key]
-        median_times = BenchmarkTools.median(runs)
-        normalized_times = [median_times[t].time / median_times["gc"].time for t in gc_tags]
+        normalized_times = [runs[t] / runs["gc"] for t in gc_tags]
         for (l, val) in zip(all_normalized_times, normalized_times)
             push!(l, val)
         end
