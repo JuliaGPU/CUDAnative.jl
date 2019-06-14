@@ -23,6 +23,17 @@ gc_tags = [t for t in benchmark_tags if startswith(t, "gc")]
 # Also write them to a CSV for further analysis.
 open("strategies.csv", "w") do file
     write(file, "benchmark,nogc,gc,gc-shared,bump,nogc-ratio,gc-ratio,gc-shared-ratio,bump-ratio\n")
+    all_results = []
+    function write_line(key, results)
+        if length(all_results) == 0
+            all_results = [Float64[] for _ in results]
+        end
+        write(file, "$key,$(join(results, ','))\n")
+        for (l, val) in zip(all_results, results)
+            push!(l, val)
+        end
+    end
+
     for key in sort(collect(keys(results)))
         runs = results[key]
         gc_time = runs["gc"] / 1e6
@@ -32,8 +43,9 @@ open("strategies.csv", "w") do file
         gc_ratio = gc_time / nogc_time
         gc_shared_ratio = gc_shared_time / nogc_time
         bump_ratio = bump_time / nogc_time
-        write(file, "$key,$nogc_time,$gc_time,$gc_shared_time,$bump_time,1,$gc_ratio,$gc_shared_ratio,$bump_ratio\n")
+        write_line(key, [nogc_time, gc_time, gc_shared_time, bump_time, 1.0, gc_ratio, gc_shared_ratio, bump_ratio])
     end
+    write_line("mean", mean.(all_results))
 end
 
 open("gc-heap-sizes.csv", "w") do file
