@@ -7,9 +7,14 @@ mutable struct Box{T}
     value::T
 end
 
+@noinline function escape(obj)
+    Base.pointer_from_objref(obj)
+end
+
 function vcopy(a, b)
     i = (blockIdx().x-1) * blockDim().x + threadIdx().x
     box = Box(a[i])
+    escape(box)
     b[i] = box.value
     return
 end
