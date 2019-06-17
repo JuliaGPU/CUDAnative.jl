@@ -160,7 +160,7 @@ function gc_pool_alloc(sz::Csize_t)
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
     end
-    return
+    return unsafe_pointer_to_objref(ptr)
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
@@ -257,7 +257,7 @@ end
 # Gets a pointer to a global with a particular name. If the global
 # does not exist yet, then it is declared in the global memory address
 # space.
-@generated function get_global_pointer(::Val{global_name}, ::Type{T})::Ptr{T} where {global_name, T}
+@generated function get_global_pointer(::Val{global_name}, ::Type{T})::CUDAnative.DevicePtr{T} where {global_name, T}
     T_global = convert(LLVMType, T)
     T_result = convert(LLVMType, Ptr{T})
 
@@ -289,23 +289,17 @@ end
     end
 
     # Call the function.
-    call_function(llvm_f, Ptr{T})
-end
-
-macro cuda_global_ptr(name, type)
-    return :(convert(
-        DevicePtr{T},
-        get_global_pointer(
-            $(Val(Symbol(name))),
-            $(esc(type)))))
+    quote
+        CUDAnative.DevicePtr{T, CUDAnative.AS.Generic}(convert(Csize_t, $(call_function(llvm_f, Ptr{T}))))
+    end
 end
 
 # Allocates `bytesize` bytes of storage by bumping the global bump
 # allocator pointer.
 function bump_alloc(bytesize::Csize_t)::Ptr{UInt8}
-    ptr = @cuda_global_ptr("bump_alloc_ptr", Csize_t)
-    chunk_address = atomic_add!(ptr, bytesize)
-    end_ptr = unsafe_load(@cuda_global_ptr("bump_alloc_end", Csize_t))
+    ptr = get_global_pointer(Val(:bump_alloc_ptr), Csize_t)
+    chunk_address = CUDAnative.atomic_add!(ptr, bytesize)
+    end_ptr = unsafe_load(get_global_pointer(Val(:bump_alloc_end), Csize_t))
     if chunk_address < end_ptr
         return convert(Ptr{UInt8}, chunk_address)
     else
