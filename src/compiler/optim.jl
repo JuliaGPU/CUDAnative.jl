@@ -63,8 +63,8 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
 
             run!(pm, mod)
         end
-        replace_malloc!(mod, job.malloc)
     end
+    replace_malloc!(mod, job.malloc)
 
     # PTX-specific optimizations
     ModulePassManager() do pm
