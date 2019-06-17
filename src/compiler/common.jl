@@ -13,10 +13,10 @@ struct CompilerJob
     blocks_per_sm::Union{Nothing,Integer}
     maxregs::Union{Nothing,Integer}
     name::Union{Nothing,String}
-    # The name of the 'malloc' function to use when allocating memory.
-    # A transform will rewrite all calls to 'malloc' to use this function
-    # instead. The 'malloc' signature must be 'void* malloc(size_t)' or
-    # compatible.
+    # The name of the memory allocation function to use when allocating
+    # managed memory. A transform will rewrite all managed memory allocations
+    # to use this function instead. The 'malloc' signature must be
+    # 'void* malloc(size_t)' or compatible.
     malloc::String
 
     CompilerJob(f, tt, cap, kernel; name=nothing,

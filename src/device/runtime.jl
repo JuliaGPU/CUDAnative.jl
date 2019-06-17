@@ -127,17 +127,42 @@ function T_prjlvalue()
     LLVM.PointerType(eltype(T_pjlvalue), Tracked)
 end
 
+# A function that gets replaced by the proper 'malloc' implementation
+# for the context it executes in. This function gets rewritten as a
+# call to the allocator, probably 'malloc'.
+@generated function managed_malloc(sz::Csize_t)
+    T_pint8 = LLVM.PointerType(LLVM.Int8Type(JuliaContext()))
+    T_size = convert(LLVMType, Csize_t)
+    T_ptr = convert(LLVMType, Ptr{UInt8})
+
+    # create function
+    llvm_f, _ = create_function(T_ptr, [T_size])
+    mod = LLVM.parent(llvm_f)
+
+    intr = LLVM.Function(mod, "julia.managed_malloc", LLVM.FunctionType(T_pint8, [T_size]))
+
+    # generate IR
+    Builder(JuliaContext()) do builder
+        entry = BasicBlock(llvm_f, "entry", JuliaContext())
+        position!(builder, entry)
+        ptr = call!(builder, intr, [parameters(llvm_f)[1]])
+        jlptr = ptrtoint!(builder, ptr, T_ptr)
+        ret!(builder, jlptr)
+    end
+
+    call_function(llvm_f, Ptr{UInt8}, Tuple{Csize_t}, :((sz,)))
+end
+
 function gc_pool_alloc(sz::Csize_t)
-    ptr = malloc(sz)
+    ptr = managed_malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
     end
-    return unsafe_pointer_to_objref(ptr)
+    return
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
-
 
 ## boxing and unboxing
 
@@ -225,6 +250,5 @@ for (T, t) in [Int8   => :int8,  Int16  => :int16,  Int32  => :int32,  Int64  =>
         compile($unbox_fn, $T, (Any,); llvm_name=$"jl_$unbox_fn")
     end
 end
-
 
 end
