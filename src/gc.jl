@@ -264,11 +264,21 @@ Registers a GC frame with the garbage collector.
 @inline function push_gc_frame(gc_frame::GCFrame, size::UInt32)
     master_record = get_gc_master_record()
 
+    threadid = get_thread_id()
+    next_rootbuf_start = master_record.root_buffers + threadid * master_record.root_buffer_capacity * sizeof(Ptr{ObjectRef})
+    new_rootbuf_finger = gc_frame + size * sizeof(ObjectRef)
+
+    # Check that we have enough room to push the GC frame.
+    if new_rootbuf_finger >= next_rootbuf_start
+        @cuprintf("Root buffer overflow in thread %ld.\n", threadid)
+        return
+    end
+
     # Update the root buffer tip.
     unsafe_store!(
         master_record.root_buffer_fingers,
-        gc_frame + size * sizeof(ObjectRef),
-        get_thread_id())
+        new_rootbuf_finger,
+        threadid)
     return
 end
 
