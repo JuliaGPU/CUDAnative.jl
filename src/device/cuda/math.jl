@@ -318,8 +318,16 @@
 @inline scalbn(x::Float32, y::Int32) = @wrap __nv_scalbnf(x::float, y::i32)::float
 
 # extra
-@inline function abs(z::Complex{T}) where T
-    im = Base.imag(z)
-    re = Base.real(z)
+@inline angle(z::Complex) = atan2(imag(z), real(z))
+
+@inline function abs(z::Complex)
+    im = imag(z)
+    re = real(z)
     return sqrt(im^2 + re^2)
+end
+
+@inline function pow(z::Complex, y)
+    θ = angle(z)
+    yθ = y * θ
+    return ComplexF64(pow(abs(z), y) * cos(yθ), pow(abs(z), y) * sin(yθ))
 end
