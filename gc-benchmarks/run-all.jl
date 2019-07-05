@@ -23,7 +23,7 @@ gc_tags = [t for t in benchmark_tags if startswith(t, "gc")]
 
 # Also write them to a CSV for further analysis.
 open("strategies.csv", "w") do file
-    write(file, "benchmark,nogc,gc,gc-shared,bump,nogc-ratio,gc-ratio,gc-shared-ratio,bump-ratio\n")
+    write(file, "benchmark,nogc,gc,gc-shared,bump,bump-pinned,nogc-ratio,gc-ratio,gc-shared-ratio,bump-ratio,bump-pinned-ratio\n")
     all_results = []
     function write_line(key, results)
         if length(all_results) == 0
@@ -41,10 +41,12 @@ open("strategies.csv", "w") do file
         gc_shared_time = runs["gc-shared"] / 1e6
         nogc_time = runs["nogc"] / 1e6
         bump_time = runs["bump"] / 1e6
+        bump_pinned_time = runs["bump-pinned"] / 1e6
         gc_ratio = gc_time / nogc_time
         gc_shared_ratio = gc_shared_time / nogc_time
         bump_ratio = bump_time / nogc_time
-        write_line(key, [nogc_time, gc_time, gc_shared_time, bump_time, 1.0, gc_ratio, gc_shared_ratio, bump_ratio])
+        bump_pinned_ratio = bump_pinned_time / nogc_time
+        write_line(key, [nogc_time, gc_time, gc_shared_time, bump_time, bump_pinned_time, 1.0, gc_ratio, gc_shared_ratio, bump_ratio, bump_pinned_ratio])
     end
     write_line("mean", mean.(all_results))
 end

@@ -44,9 +44,13 @@ macro cuda_sync(args...)
         local mode = get_gc_mode()
         if mode == "gc"
             CUDAnative.@cuda gc=true gc_config=gc_config $(args...)
-        elseif mode == "bump"
+        elseif startswith(mode, "bump")
             local capacity = 60 * MiB
-            local buf = Mem.alloc(Mem.DeviceBuffer, capacity)
+            if mode == "bump"
+                local buf = Mem.alloc(Mem.DeviceBuffer, capacity)
+            else
+                local buf = Mem.alloc(Mem.HostBuffer, capacity)
+            end
             local start_address = pointer(buf)
             local function init(kernel)
                 CUDAnative.Runtime.bump_alloc_init!(kernel, start_address, capacity)
@@ -73,7 +77,7 @@ benchmark_tags = [
     "gc-30mb", "gc-shared-30mb",
     "gc-15mb", "gc-shared-15mb",
     "gc-10mb", "gc-shared-10mb",
-    "nogc", "bump"
+    "nogc", "bump", "bump-pinned"
 ]
 
 macro cuda_benchmark(name, ex)
@@ -116,6 +120,10 @@ macro cuda_benchmark(name, ex)
         end
         register_cuda_benchmark($name, "bump") do
             global gc_mode = "bump"
+            $(ex)
+        end
+        register_cuda_benchmark($name, "bump-pinned") do
+            global gc_mode = "bump-pinned"
             $(ex)
         end
     end)
