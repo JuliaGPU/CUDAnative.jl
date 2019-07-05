@@ -316,3 +316,10 @@
 
 @inline scalbn(x::Float64, y::Int32) = @wrap __nv_scalbn(x::double, y::i32)::double
 @inline scalbn(x::Float32, y::Int32) = @wrap __nv_scalbnf(x::float, y::i32)::float
+
+# extra
+@inline function abs(z::Complex{T}) where T
+    im = Base.imag(z)
+    re = Base.real(z)
+    return sqrt(im^2 + re^2)
+end
