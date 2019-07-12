@@ -51,7 +51,7 @@ end
 
 function codegen(target::Symbol, job::CompilerJob;
                  libraries::Bool=true, dynamic_parallelism::Bool=true, optimize::Bool=true,
-                 strip::Bool=false,strict::Bool=true)
+                 strip::Bool=false, strict::Bool=true, internalize::Bool=true)
     ## Julia IR
 
     @timeit to[] "validation" check_method(job)
@@ -91,12 +91,12 @@ function codegen(target::Symbol, job::CompilerJob;
     # always preload the runtime, and do so early; it cannot be part of any timing block
     # because it recurses into the compiler
     if libraries
-        runtime = load_runtime(job.cap)
+        runtime = load_runtime(job.cap, job.malloc)
         runtime_fns = LLVM.name.(defs(runtime))
     end
 
     @timeit to[] "LLVM middle-end" begin
-        ir, kernel = @timeit to[] "IR generation" irgen(job, method_instance, world)
+        ir, kernel = @timeit to[] "IR generation" irgen(job, method_instance, world; internalize=internalize)
 
         if libraries
             undefined_fns = LLVM.name.(decls(ir))
@@ -154,7 +154,7 @@ function codegen(target::Symbol, job::CompilerJob;
                 # cached compilation
                 dyn_kernel_fn = get!(cache, dyn_job) do
                     dyn_ir, dyn_kernel = codegen(:llvm, dyn_job;
-                                                 optimize=optimize, strip=strip,
+                                                 optimize=optimize, strip=strip, internalize=internalize,
                                                  dynamic_parallelism=false, strict=false)
                     dyn_kernel_fn = LLVM.name(dyn_kernel)
                     link!(ir, dyn_ir)

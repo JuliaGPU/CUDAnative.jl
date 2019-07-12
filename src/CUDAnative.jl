@@ -29,12 +29,18 @@ include(joinpath("device", "pointer.jl"))
 include(joinpath("device", "array.jl"))
 include(joinpath("device", "cuda.jl"))
 include(joinpath("device", "llvm.jl"))
+include(joinpath("device", "threading.jl"))
+
+# The interrupts and GC files need to be loaded _before_ the
+# runtime intrinsics file, because some runtime intrinsics
+# depend on the GC and the GC depends on interrupts.
+include("interrupts.jl")
+include("gc.jl")
 include(joinpath("device", "runtime.jl"))
 
 include("compiler.jl")
 include("execution.jl")
 include("reflection.jl")
-
 include("deprecated.jl")
 
 include("init.jl")

@@ -12,8 +12,9 @@ module Runtime
 using ..CUDAnative
 using LLVM
 using LLVM.Interop
+using CUDAdrv
 
-
+import ..CUDAnative: GCFrame
 ## representation of a runtime method instance
 
 struct RuntimeMethodInstance
@@ -127,8 +128,35 @@ function T_prjlvalue()
     LLVM.PointerType(eltype(T_pjlvalue), Tracked)
 end
 
+# A function that gets replaced by the proper 'malloc' implementation
+# for the context it executes in. When the GC is used, calls to this
+# function are replaced with 'gc_malloc'; otherwise, this function gets
+# rewritten as a call to the allocator, probably 'malloc'.
+@generated function managed_malloc(sz::Csize_t)
+    T_pint8 = LLVM.PointerType(LLVM.Int8Type(JuliaContext()))
+    T_size = convert(LLVMType, Csize_t)
+    T_ptr = convert(LLVMType, Ptr{UInt8})
+
+    # create function
+    llvm_f, _ = create_function(T_ptr, [T_size])
+    mod = LLVM.parent(llvm_f)
+
+    intr = LLVM.Function(mod, "julia.managed_malloc", LLVM.FunctionType(T_pint8, [T_size]))
+
+    # generate IR
+    Builder(JuliaContext()) do builder
+        entry = BasicBlock(llvm_f, "entry", JuliaContext())
+        position!(builder, entry)
+        ptr = call!(builder, intr, [parameters(llvm_f)[1]])
+        jlptr = ptrtoint!(builder, ptr, T_ptr)
+        ret!(builder, jlptr)
+    end
+
+    call_function(llvm_f, Ptr{UInt8}, Tuple{Csize_t}, :((sz,)))
+end
+
 function gc_pool_alloc(sz::Csize_t)
-    ptr = malloc(sz)
+    ptr = managed_malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
@@ -137,7 +165,6 @@ function gc_pool_alloc(sz::Csize_t)
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
-
 
 ## boxing and unboxing
 
@@ -226,5 +253,357 @@ for (T, t) in [Int8   => :int8,  Int16  => :int16,  Int32  => :int32,  Int64  =>
     end
 end
 
+## Garbage collection
+
+# LLVM type of a pointer to a tracked pointer
+function T_pprjlvalue()
+    T_pjlvalue = convert(LLVMType, Any, true)
+    LLVM.PointerType(
+        LLVM.PointerType(eltype(T_pjlvalue), Tracked))
+end
+
+# Include GC memory allocation functions into the runtime.
+compile(CUDAnative.gc_malloc, Ptr{UInt8}, (Csize_t,))
+compile(CUDAnative.gc_malloc_object, Any, (Csize_t,), T_prjlvalue)
+
+# Include GC frame management functions into the runtime.
+compile(CUDAnative.new_gc_frame, Any, (Cuint,), T_pprjlvalue)
+
+compile(
+    CUDAnative.push_gc_frame,
+    Nothing,
+    (GCFrame, Cuint),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_pprjlvalue(), convert(LLVMType, UInt32)])
+
+compile(
+    CUDAnative.pop_gc_frame,
+    Nothing,
+    (GCFrame,),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_pprjlvalue()])
+
+# Also import the safepoint and perma-safepoint functions.
+compile(CUDAnative.gc_safepoint, Cvoid, ())
+compile(CUDAnative.gc_perma_safepoint, Cvoid, ())
+
+## Bump allocator.
+
+# Allocates `bytesize` bytes of storage by bumping the global bump
+# allocator pointer.
+function bump_alloc(bytesize::Csize_t)::Ptr{UInt8}
+    ptr = CUDAnative.@cuda_global_ptr("bump_alloc_ptr", Csize_t)
+    chunk_address = CUDAnative.atomic_add!(ptr, bytesize)
+    end_ptr = unsafe_load(CUDAnative.@cuda_global_ptr("bump_alloc_end", Csize_t))
+    if chunk_address < end_ptr
+        return Ptr{UInt8}(chunk_address)
+    else
+        return C_NULL
+    end
+end
+
+compile(bump_alloc, Ptr{UInt8}, (Csize_t,))
+
+function maybe_set_global(kernel, name, value::T) where T
+    try
+        global_handle = CuGlobal{T}(kernel.mod, name)
+        set(global_handle, value)
+    catch exception
+        # The interrupt pointer may not have been declared (because it is unused).
+        # In that case, we should do nothing.
+        if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
+            rethrow()
+        end
+    end
+end
+
+function bump_alloc_init!(kernel, buffer_start, buffer_size)
+    maybe_set_global(kernel, "bump_alloc_ptr", buffer_start)
+    maybe_set_global(kernel, "bump_alloc_end", buffer_start + buffer_size)
+end
+
+## Arrays
+
+# A data structure that carefully mirrors an in-memory array control
+# structure for Julia arrays, as laid out by the compiler.
+mutable struct Array1D
+    # This is the data layout for Julia arrays, which we adhere to here.
+    # 
+    #     JL_EXTENSION typedef struct {
+    #       JL_DATA_TYPE
+    #       void *data;
+    #     #ifdef STORE_ARRAY_LEN
+    #       size_t length;
+    #     #endif
+    #       jl_array_flags_t flags;
+    #       uint16_t elsize;
+    #       uint32_t offset;  // for 1-d only. does not need to get big.
+    #       size_t nrows;
+    #       union {
+    #           // 1d
+    #           size_t maxsize;
+    #           // Nd
+    #           size_t ncols;
+    #       };
+    #       // other dim sizes go here for ndims > 2
+    #
+    #       // followed by alignment padding and inline data, or owner pointer
+    #     } jl_array_t;
+
+    data::Ptr{UInt8}
+    length::Csize_t
+    flags::UInt16
+    elsize::UInt16
+    offset::UInt32
+    nrows::Csize_t
+    maxsize::Csize_t
+end
+
+function zero_fill!(ptr::Ptr{UInt8}, count::Integer)
+    for i in 1:count
+        unsafe_store!(ptr, UInt8(0), count)
+    end
+    return
+end
+
+function memmove!(dst::Ptr{UInt8}, src::Ptr{UInt8}, sz::Integer)
+    if dst < src
+        for i in 1:sz
+            unsafe_store!(dst, unsafe_load(src, i), i)
+        end
+    else
+        for i in sz:-1:1
+            unsafe_store!(dst, unsafe_load(src, i), i)
+        end
+    end
+    return
+end
+
+# Resize the buffer to a max size of `newlen`
+# The buffer can either be newly allocated or realloc'd, the return
+# value is true if a new buffer is allocated and false if it is realloc'd.
+# the caller needs to take care of moving the data from the old buffer
+# to the new one if necessary.
+# When this function returns, the `.data` pointer always points to
+# the **beginning** of the new buffer.
+function array_resize_buffer(a::Array1D, newlen::Csize_t)::Bool
+    elsz = Csize_t(a.elsize)
+    nbytes = newlen * elsz
+    oldnbytes = a.maxsize * elsz
+
+    if elsz == 1
+        nbytes += 1
+        oldnbytes += 1
+    end
+
+    # Allocate a new buffer. 'managed_malloc' will get replaced with
+    # the "right" allocation function for the environment in which this
+    # function is compiled. So if the GC is enabled, then 'managed_malloc'
+    # will actually call 'gc_malloc'; otherwise, it's probably going to
+    # be 'malloc'.
+    a.data = managed_malloc(nbytes)
+    zero_fill!(a.data + oldnbytes, nbytes - oldnbytes)
+    a.maxsize = newlen
+    return true
+end
+
+"""
+    jl_array_grow_at_impl(a, idx, inc, n)
+
+Grows one-dimensional array `a` containing `n` elements by `inc` elements at
+zero-based index `idx`.
+"""
+function jl_array_grow_at_impl(a::Array1D, idx::Csize_t, inc::Csize_t, n::Csize_t)
+    data = a.data
+    elsz = Csize_t(a.elsize)
+    reqmaxsize = a.offset + n + inc
+    has_gap = n > idx
+    nb1 = idx * elsz
+    nbinc = inc * elsz
+    if reqmaxsize > a.maxsize
+        if reqmaxsize < 4
+            newmaxsize = Csize_t(4)
+        elseif reqmaxsize >= a.maxsize * 2
+            newmaxsize = reqmaxsize
+        else
+            newmaxsize = a.maxsize * 2
+        end
+
+        newbuf = array_resize_buffer(a, newmaxsize)
+        newdata = a.data + a.offset * elsz
+        if newbuf
+            memmove!(newdata, data, nb1)
+            if has_gap
+                memmove!(newdata + nb1 + nbinc, data + nb1, n * elsz - nb1)
+            end
+        elseif has_gap
+            memmove!(newdata + nb1 + nbinc, newdata + nb1, n * elsz - nb1)
+        end
+        a.data = data = newdata
+    elseif has_gap
+        memmove!(data + nb1 + nbinc, data + nb1, n * elsz - nb1)
+    end
+
+    newnrows = n + inc
+    a.length = newnrows
+    a.nrows = newnrows
+    zero_fill!(data + nb1, nbinc)
+    return
+end
+
+"""
+    jl_array_grow_at(a, idx, inc)
+
+Grows one-dimensional array `a` by `inc` elements at zero-based index `idx`.
+"""
+function jl_array_grow_at(a::Array1D, idx::Cssize_t, inc::Csize_t)
+    jl_array_grow_at_impl(a, Csize_t(idx), inc, a.nrows)
+    return
+end
+
+compile(
+    jl_array_grow_at,
+    Cvoid,
+    (Array1D, Cssize_t, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Cssize_t), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_grow_end(a, inc)
+
+Grows one-dimensional array `a` by `inc` elements at the end.
+"""
+function jl_array_grow_end(a::Array1D, inc::Csize_t)
+    n = a.nrows
+    jl_array_grow_at_impl(a, n, inc, n)
+    return
+end
+
+compile(
+    jl_array_grow_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_grow_beg(a, inc)
+
+Grows one-dimensional array `a` by `inc` elements at the beginning of the array.
+"""
+function jl_array_grow_beg(a::Array1D, inc::Csize_t)
+    jl_array_grow_at_impl(a, Csize_t(0), inc, a.nrows)
+    return
+end
+
+compile(
+    jl_array_grow_beg,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_sizehint(a, sz)
+
+Suggest that one-dimensional array `a` reserve capacity for at least `sz` elements.
+"""
+function jl_array_sizehint(a::Array1D, sz::Csize_t)
+    n = a.length
+    data = a.data
+    elsz = Csize_t(a.elsize)
+    reqmaxsize = a.offset + sz
+    if reqmaxsize > a.maxsize
+        newbuf = array_resize_buffer(a, reqmaxsize)
+        newdata = a.data + a.offset * elsz
+        if newbuf
+            memmove!(newdata, data, n * elsz)
+        end
+        a.data = data = newdata
+    end
+    return
+end
+
+compile(
+    jl_array_sizehint,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_del_at_impl(a, idx, dec, n)
+
+Removes `dec` elements from one-dimensional array `a`, starting at zero-based index `idx`.
+`n` is the number of elements in `a`.
+"""
+function jl_array_del_at_impl(a::Array1D, idx::Csize_t, dec::Csize_t, n::Csize_t)
+    data = a.data
+    elsz = a.elsize
+    last = idx + dec
+    if n > last
+        memmove!(data + idx * elsz, data + last * elsz, (n - last) * elsz)
+    end
+    n -= dec
+    if elsz == 1
+        Base.unsafe_store!(data, n + 1, UInt8(0))
+    end
+    a.nrows = n
+    a.length = n
+    return
+end
+
+"""
+    jl_array_del_beg(a, dec)
+
+Removes `dec` elements from the beginning of one-dimensional array `a`.
+"""
+function jl_array_del_beg(a::Array1D, dec::Csize_t)
+    jl_array_del_at_impl(a, Csize_t(0), dec, a.nrows)
+    return
+end
+
+compile(
+    jl_array_del_beg,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+"""
+    jl_array_del_end(a, dec)
+
+Removes `dec` elements from the end of one-dimensional array `a`.
+"""
+function jl_array_del_end(a::Array1D, dec::Csize_t)
+    n = a.nrows
+    jl_array_del_at_impl(a, n, dec, n)
+    return
+end
+
+compile(
+    jl_array_del_end,
+    Cvoid,
+    (Array1D, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Csize_t)])
+
+
+"""
+    jl_array_del_at(a, idx, dec)
+
+Removes `dec` elements from one-dimensional array `a`, starting at zero-based index `idx`.
+"""
+function jl_array_del_at(a::Array1D, idx::Cssize_t, dec::Csize_t)
+    jl_array_del_at_impl(a, Csize_t(idx), dec, a.nrows)
+    return
+end
+
+compile(
+    jl_array_del_at,
+    Cvoid,
+    (Array1D, Cssize_t, Csize_t),
+    () -> convert(LLVMType, Cvoid),
+    () -> [T_prjlvalue(), convert(LLVMType, Cssize_t), convert(LLVMType, Csize_t)])
 
 end

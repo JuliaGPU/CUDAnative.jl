@@ -19,14 +19,14 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
     #
     # NOTE: we need to use multiple distinct pass managers to force pass ordering;
     #       intrinsics should never get lowered before Julia has optimized them.
-    if VERSION < v"1.2.0-DEV.375"
+    if VERSION < v"1.3.0-DEV.390"
         # with older versions of Julia, intrinsics are lowered unconditionally so we need to
         # replace them with GPU-compatible counterparts before anything else. that breaks
         # certain optimizations though: https://github.com/JuliaGPU/CUDAnative.jl/issues/340
 
         ModulePassManager() do pm
             initialize!(pm)
-            add!(pm, FunctionPass("LowerGCFrame", lower_gc_frame!))
+            add!(pm, FunctionPass("LowerGCFrame", eager_lower_gc_frame!))
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
             run!(pm, mod)
@@ -45,24 +45,27 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
             ccall(:jl_add_optimization_passes, Cvoid,
                   (LLVM.API.LLVMPassManagerRef, Cint, Cint),
                   LLVM.ref(pm), Base.JLOptions().opt_level, #=lower_intrinsics=# 0)
+            ccall(:LLVMExtraAddLateLowerGCFramePass, Cvoid, (LLVM.API.LLVMPassManagerRef,), LLVM.ref(pm))
             run!(pm, mod)
         end
 
         ModulePassManager() do pm
             initialize!(pm)
+            if job.gc
+                add!(pm, FunctionPass("InsertSafepointsGPUGC", fun -> insert_safepoints_gpugc!(fun, entry)))
+                add!(pm, ModulePass("FinalLowerGPUGC", lower_final_gc_intrinsics_gpugc!))
+                add!(pm, FunctionPass("LowerArraysGPUGC", lower_array_calls_gc!))
+            else
+                add!(pm, ModulePass("FinalLowerNoGC", lower_final_gc_intrinsics_nogc!))
+                add!(pm, FunctionPass("LowerArraysNoGC", lower_array_calls_nogc!))
+            end
 
-            # lower intrinsics
-            add!(pm, FunctionPass("LowerGCFrame", lower_gc_frame!))
             aggressive_dce!(pm) # remove dead uses of ptls
             add!(pm, ModulePass("LowerPTLS", lower_ptls!))
 
-            # the Julia GC lowering pass also has some clean-up that is required
-            if VERSION >= v"1.2.0-DEV.531"
-                late_lower_gc_frame!(pm)
-            end
-
             run!(pm, mod)
         end
+        replace_malloc!(mod, job.malloc)
     end
 
     # PTX-specific optimizations
@@ -296,6 +299,29 @@ function fixup_metadata!(f::LLVM.Function)
     end
 end
 
+# Visits all calls to a particular intrinsic in a given LLVM module.
+function visit_calls_to(visit_call::Function, name::AbstractString, mod::LLVM.Module)
+    if haskey(functions(mod), name)
+        func = functions(mod)[name]
+
+        for use in uses(func)
+            call = user(use)::LLVM.CallInst
+            visit_call(call, func)
+        end
+    end
+end
+
+# Deletes all calls to a particular intrinsic in a given LLVM module.
+# Returns a Boolean that tells if any calls were actually deleted.
+function delete_calls_to!(name::AbstractString, mod::LLVM.Module)::Bool
+    changed = false
+    visit_calls_to(name, mod) do call, _
+        unsafe_delete!(LLVM.parent(call), call)
+        changed = true
+    end
+    return changed
+end
+
 # lower object allocations to to PTX malloc
 #
 # this is a PoC implementation that is very simple: allocate, and never free. it also runs
@@ -304,7 +330,7 @@ end
 # is currently very architecture/CPU specific: hard-coded pool sizes, TLS references, etc.
 # such IR is hard to clean-up, so we probably will need to have the GC lowering pass emit
 # lower-level intrinsics which then can be lowered to architecture-specific code.
-function lower_gc_frame!(fun::LLVM.Function)
+function eager_lower_gc_frame!(fun::LLVM.Function)
     job = current_job::CompilerJob
     mod = LLVM.parent(fun)
     changed = false
@@ -351,8 +377,727 @@ function lower_gc_frame!(fun::LLVM.Function)
 
         @compiler_assert isempty(uses(barrier)) job
     end
+end
+
+# Visits all calls to a particular intrinsic in a given LLVM module
+# and redirects those calls to a different function.
+# Returns a Boolean that tells if any calls were actually redirected.
+function redirect_calls_to!(from::AbstractString, to, mod::LLVM.Module)::Bool
+    changed = false
+    visit_calls_to(from, mod) do call, _
+        args = collect(operands(call))[1:end - 1]
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            new_call = call!(builder, to, args)
+            replace_uses!(call, new_call)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+        changed = true
+    end
+    return changed
+end
+
+# Lowers the GC intrinsics produced by the LateLowerGCFrame pass to
+# use the "malloc, never free" strategy. These intrinsics are the
+# last point at which we can intervene in the pipeline before the
+# passes that deal with them become CPU-specific.
+function lower_final_gc_intrinsics_nogc!(mod::LLVM.Module)
+    changed = false
+
+    # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
+    # store for an object, including headroom, but does not set the object's
+    # tag.
+    visit_calls_to("julia.gc_alloc_bytes", mod) do call, gc_alloc_bytes
+        gc_alloc_bytes_ft = eltype(llvmtype(gc_alloc_bytes))::LLVM.FunctionType
+        T_ret = return_type(gc_alloc_bytes_ft)::LLVM.PointerType
+        T_bitcast = LLVM.PointerType(T_ret, LLVM.addrspace(T_ret))
+
+        # Decode the call.
+        ops = collect(operands(call))
+        size = ops[2]
+
+        # We need to reserve a single pointer of headroom for the tag.
+        # (LateLowerGCFrame depends on us doing that.)
+        headroom = Runtime.tag_size
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            total_size = add!(builder, size, ConstantInt(Int32(headroom), JuliaContext()))
+            ptr = call!(builder, Runtime.get(:gc_pool_alloc), [total_size])
+            cast_ptr = bitcast!(builder, ptr, T_bitcast)
+            bumped_ptr = gep!(builder, cast_ptr, [ConstantInt(Int32(1), JuliaContext())])
+            result_ptr = bitcast!(builder, bumped_ptr, T_ret)
+            replace_uses!(call, result_ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # Next up: 'julia.new_gc_frame'. This intrinsic allocates a new GC frame.
+    # We'll lower it as an alloca and hope SSA construction and DCE passes
+    # get rid of the alloca. This is a reasonable thing to hope for because
+    # all intrinsics that may cause the GC frame to escape will be replaced by
+    # nops.
+    visit_calls_to("julia.new_gc_frame", mod) do call, new_gc_frame
+        new_gc_frame_ft = eltype(llvmtype(new_gc_frame))::LLVM.FunctionType
+        T_ret = return_type(new_gc_frame_ft)::LLVM.PointerType
+        T_alloca = eltype(T_ret)
+
+        # Decode the call.
+        ops = collect(operands(call))
+        size = ops[1]
+
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = array_alloca!(builder, T_alloca, size)
+            replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.get_gc_frame_slot' is closely related to the previous
+    # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
+    # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
+    visit_calls_to("julia.get_gc_frame_slot", mod) do call, _
+        # Decode the call.
+        ops = collect(operands(call))
+        frame = ops[1]
+        offset = ops[2]
+
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = gep!(builder, frame, [offset])
+            replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.push_gc_frame' registers a GC frame with the GC. We
+    # don't have a GC, so we can just delete calls to this intrinsic!
+    changed |= delete_calls_to!("julia.push_gc_frame", mod)
+
+    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC, so
+    # we can just delete calls to this intrinsic, too.
+    changed |= delete_calls_to!("julia.pop_gc_frame", mod)
+
+    # Ditto for 'julia.queue_gc_root'.
+    changed |= delete_calls_to!("julia.queue_gc_root", mod)
 
     return changed
+end
+
+# Emits instructions that allocate a particular number of bytes
+# of GC-managed memory. No headroom is included. No tags are set.
+function new_bytes!(builder::LLVM.Builder, malloc, size)
+    call!(builder, malloc, [size])
+end
+
+# Emits instructions that allocate bytes for an object, including
+# headroom for the object's tag. Also fills in the object's tag if
+# one is provided.
+function new_object!(builder::LLVM.Builder, malloc, size, tag::Union{Type, Nothing} = nothing)
+    # We need to reserve a single pointer of headroom for the tag.
+    # (LateLowerGCFrame depends on us doing that.)
+    headroom = Runtime.tag_size
+
+    # Call the allocation function and bump the resulting pointer
+    # so the headroom sits just in front of the returned pointer.
+    total_size = add!(builder, size, ConstantInt(Int32(headroom), JuliaContext()))
+    obj_ptr = new_bytes!(builder, malloc, total_size)
+
+    jl_value_t = llvmtype(obj_ptr)
+    T_bitcast = LLVM.PointerType(jl_value_t, LLVM.addrspace(jl_value_t))
+
+    ptr = bitcast!(builder, obj_ptr, T_bitcast)
+    if tag != nothing
+        # Fill in the tag if we have one.
+        store!(
+            builder,
+            inttoptr!(
+                builder,
+                ConstantInt(
+                    convert(LLVMType, Int64),
+                    Int64(pointer_from_objref(tag))),
+                jl_value_t),
+            ptr)
+    end
+    bumped_ptr = gep!(builder, ptr, [ConstantInt(Int32(1), JuliaContext())])
+    return bitcast!(builder, bumped_ptr, jl_value_t)
+end
+
+"""
+lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
+
+An LLVM pass that lowers the GC intrinsics produced by the
+LateLowerGCFrame pass to use the GPU GC. These intrinsics are the
+last point at which we can intervene in the pipeline before the
+passes that deal with them become CPU-specific.
+"""
+function lower_final_gc_intrinsics_gpugc!(mod::LLVM.Module)
+    changed = false
+
+    # We'll start off with 'julia.gc_alloc_bytes'. This intrinsic allocates
+    # store for an object, including headroom, but does not set the object's
+    # tag.
+    visit_calls_to("julia.gc_alloc_bytes", mod) do call, gc_alloc_bytes
+        # Decode the call.
+        ops = collect(operands(call))
+        size = ops[2]
+
+        # We need to reserve a single pointer of headroom for the tag.
+        # (LateLowerGCFrame depends on us doing that.)
+        headroom = Runtime.tag_size
+
+        # Call the allocation function and bump the resulting pointer
+        # so the headroom sits just in front of the returned pointer.
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            result_ptr = new_object!(builder, Runtime.get(:gc_malloc_object), size)
+            replace_uses!(call, result_ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # Next up: 'julia.new_gc_frame'. This intrinsic allocates a new GC frame.
+    # We actually have a call that implements this intrinsic. Let's use that.
+    changed |= redirect_calls_to!("julia.new_gc_frame", Runtime.get(:new_gc_frame), mod)
+
+    # The 'julia.get_gc_frame_slot' is closely related to the previous
+    # intrinisc. Specifically, 'julia.get_gc_frame_slot' gets the address of
+    # a slot in the GC frame. We can simply turn this intrinsic into a GEP.
+    visit_calls_to("julia.get_gc_frame_slot", mod) do call, _
+        # Decode the call.
+        ops = collect(operands(call))
+        frame = ops[1]
+        offset = ops[2]
+
+        let builder = Builder(JuliaContext())
+            position!(builder, call)
+            ptr = gep!(builder, frame, [offset])
+            replace_uses!(call, ptr)
+            unsafe_delete!(LLVM.parent(call), call)
+            dispose(builder)
+        end
+
+        changed = true
+    end
+
+    # The 'julia.push_gc_frame' registers a GC frame with the GC. We will
+    # call a function that does just this.
+    changed |= redirect_calls_to!("julia.push_gc_frame", Runtime.get(:push_gc_frame), mod)
+
+    # The 'julia.pop_gc_frame' unregisters a GC frame with the GC. We again
+    # have a function in the runtime library.
+    changed |= redirect_calls_to!("julia.pop_gc_frame", Runtime.get(:pop_gc_frame), mod)
+
+    # Delete calls to 'julia.queue_gc_root'.
+    changed |= delete_calls_to!("julia.queue_gc_root", mod)
+
+    return changed
+end
+
+# Tells if a function manages a GC frame.
+function has_gc_frame(fun::LLVM.Function)
+    for insn in instructions(entry(fun))
+        if isa(insn, LLVM.CallInst)
+            callee = called_value(insn)
+            if isa(callee, LLVM.Function) && LLVM.name(callee) == "julia.new_gc_frame"
+                return true
+            end
+        end
+    end
+    return false
+end
+
+# Tells if an instruction is a call to a non-intrinsic callee.
+function is_non_intrinsic_call(instruction::LLVM.Instruction)
+    if isa(instruction, LLVM.CallInst)
+        callee = called_value(instruction)
+        if isa(callee, LLVM.Function)
+            callee_name = LLVM.name(callee)
+            return !startswith(callee_name, "julia.") && !startswith(callee_name, "llvm.")
+        else
+            return true
+        end
+    else
+        return false
+    end
+end
+
+"""
+    insert_safepoints_gpugc!(fun::LLVM.Function, entry::LLVM.Function)
+
+An LLVM pass that inserts GC safepoints in such a way that threads
+reach a safepoint after a reasonable amount of time.
+
+Moreover, this pass also inserts perma-safepoints after entry point returns.
+Perma-safepoints inform the GC that it doesn't need to wait for a warp to
+reach a safepoint; inserting them stops the GC from deadlocking.
+"""
+function insert_safepoints_gpugc!(fun::LLVM.Function, entry::LLVM.Function)
+    # Insert a safepoint before every function call, but only for
+    # functions that manage a GC frame.
+    #
+    # TODO: also insert safepoints on loop back-edges? This is what people
+    # usually do, but it requires nontrivial IR analyses that the LLVM C
+    # API doesn't expose.
+
+    if has_gc_frame(fun)
+        safepoint_function = Runtime.get(:gc_safepoint)
+        let builder = Builder(JuliaContext())
+            for block in blocks(fun)
+                for instruction in instructions(block)
+                    if is_non_intrinsic_call(instruction)
+                        if called_value(instruction) == safepoint_function
+                            continue
+                        end
+
+                        # Insert a safepoint just before the call.
+                        position!(builder, instruction)
+                        debuglocation!(builder, instruction)
+                        call!(builder, safepoint_function, LLVM.Value[])
+                    end
+                end
+            end
+            dispose(builder)
+        end
+    end
+
+    # Insert perma-safepoints if necessary.
+    if fun == entry
+        # Looks like we're going to have to insert perma-safepoints.
+        # We need to keep in mind that perma-safepoints are per-warp,
+        # so we absolutely cannot allow warps to be in a divergent
+        # state when a perma-safepoint is set---all bets are off if
+        # that happens anyway.
+        #
+        # To make sure that we don't end up in that situation,
+        # we will create a dedicated return block and replace all 'ret'
+        # instructions by jumps to that return block.
+
+        # Create the dedicated return block.
+        return_block = BasicBlock(fun, "kernel_exit")
+        let builder = Builder(JuliaContext())
+            position!(builder, return_block)
+            call!(builder, Runtime.get(:gc_perma_safepoint), LLVM.Value[])
+            ret!(builder)
+            dispose(builder)
+        end
+
+        # Rewrite return instructions as branches to the return bloc.
+        for block in blocks(fun)
+            if block == return_block
+                # We need to be careful not to trick ourselves into
+                # turning the return block's 'ret' into an infinite loop.
+                continue
+            end
+            term = terminator(block)
+            if isa(term, LLVM.RetInst)
+                unsafe_delete!(block, term)
+                let builder = Builder(JuliaContext())
+                    position!(builder, block)
+                    br!(builder, return_block)
+                    dispose(builder)
+                end
+            end
+        end
+    end
+    return true
+end
+
+# Tries to evaluate an LLVM IR constant as a literal pointer.
+function to_literal_pointer(value)::Tuple{Bool, Ptr{Cvoid}}
+    if !isa(value, LLVM.ConstantExpr)
+        return (false, C_NULL)
+    end
+
+    if !occursin("inttoptr", string(value))
+        return (false, C_NULL)
+    end
+
+    # Peel off addrspacecast and inttoptr.
+    ptr_arg = value
+    while occursin("addrspacecast", string(ptr_arg)) || occursin("inttoptr", string(ptr_arg))
+        ptr_arg = first(operands(ptr_arg))
+    end
+    ptr_val = convert(Int, ptr_arg)
+    (true, Ptr{Cvoid}(ptr_val))
+end
+
+# Visits all calls to literal pointers in a function.
+function visit_literal_pointer_calls(visit_call::Function, fun::LLVM.Function)
+    for block in blocks(fun)
+        for call in instructions(block)
+            if !isa(call, LLVM.CallInst)
+                continue
+            end
+
+            callee = called_value(call)
+            if !isa(callee, LLVM.ConstantExpr)
+                continue
+            end
+
+            # detect calls to literal pointers
+            # FIXME: can we detect these properly?
+            # FIXME: jl_apply_generic and jl_invoke also have such arguments
+            is_ptr, ptr = to_literal_pointer(callee)
+            if is_ptr
+                # look it up in the Julia JIT cache
+                frames = ccall(:jl_lookup_code_address, Any, (Ptr{Cvoid}, Cint,), ptr, 0)
+                if length(frames) >= 1
+                    # @compiler_assert length(frames) == 1 job frames=frames
+                    fn, file, line, linfo, fromC, inlined, ip = last(frames)
+                    visit_call(call, fn)
+                end
+            end
+        end
+    end
+end
+
+# Emits instructions that create a new array. The array's element type
+# must be statically known. Its dimensions are represented as a tuple
+# of LLVM IR values. A pointer to the new array is returned.
+function new_array!(builder::LLVM.Builder, malloc, array_type::Type, dims::Tuple; data_ptr::Union{Nothing,LLVM.Value} = nothing)
+    # Since time immemorial, the structure of an array is (quoting from the
+    # Julia source code here):
+    #
+    #     typedef struct {
+    #       /*
+    #         how - allocation style
+    #         0 = data is inlined, or a foreign pointer we don't manage
+    #         1 = julia-allocated buffer that needs to be marked
+    #         2 = malloc-allocated pointer this array object manages
+    #         3 = has a pointer to the object that owns the data
+    #       */
+    #       uint16_t how:2;
+    #       uint16_t ndims:10;
+    #       uint16_t pooled:1;
+    #       uint16_t ptrarray:1;  // representation is pointer array
+    #       uint16_t isshared:1;  // data is shared by multiple Arrays
+    #       uint16_t isaligned:1; // data allocated with memalign
+    #     } jl_array_flags_t;
+    #
+    #     JL_EXTENSION typedef struct {
+    #       JL_DATA_TYPE
+    #       void *data;
+    #     #ifdef STORE_ARRAY_LEN
+    #       size_t length;
+    #     #endif
+    #       jl_array_flags_t flags;
+    #       uint16_t elsize;
+    #       uint32_t offset;  // for 1-d only. does not need to get big.
+    #       size_t nrows;
+    #       union {
+    #           // 1d
+    #           size_t maxsize;
+    #           // Nd
+    #           size_t ncols;
+    #       };
+    #       // other dim sizes go here for ndims > 2
+    #
+    #       // followed by alignment padding and inline data, or owner pointer
+    #     } jl_array_t;
+    #
+    # where `STORE_ARRAY_LEN` is a preprocessor directive that is technically a
+    # "configuration option." AFAICT, `STORE_ARRAY_LEN` is just always defined in
+    # practice.
+    #
+    # The Julia compiler is more than happy to eagerly generate code that accesses
+    # fields of this data structure directly, so we can't invent our own array data
+    # structure. Consequently, we will emit code here that carefully constructs
+    # an instance of `jl_array_t`.
+    #
+    # To keep things tidy, we'll construct an array (ironic, I know) that contains the
+    # values we'll assign to each field of the array. After that, we will generate
+    # code that fills in every field in one fell swoop.
+
+    fields = []
+
+    # Compute the size of the element type.
+    element_type = eltype(array_type)
+    llvm_element_type = convert(LLVMType, element_type, true)
+    mod = LLVM.parent(LLVM.parent(position(builder)))
+    layout = datalayout(mod)
+    element_size = Csize_t(sizeof(layout, llvm_element_type))
+
+    # Compute the number of elements in the array.
+    element_count = LLVM.ConstantInt(convert(LLVMType, Csize_t), 1)
+    for i in dims
+        element_count = mul!(builder, element_count, intcast!(builder, i, convert(LLVMType, Csize_t)))
+    end
+
+    # Compute the size of the array's elements in bytes.
+    data_bytesize = mul!(
+        builder,
+        LLVM.ConstantInt(convert(LLVMType, Csize_t), element_size),
+        element_count)
+
+    if element_size == Csize_t(1) && length(dims) == 1
+        # If we're allocating an array of bytes, we will throw in an extra
+        # byte at the end for compatibility with Julia's ABI.
+        data_bytesize = add!(builder, data_bytesize, LLVM.ConstantInt(convert(LLVMType, Csize_t), 1))
+    end
+
+    # Actually allocate the array's contents. We will just always
+    # use a separate buffer. Inline data storage is wasteful and
+    # harder to implement.
+    if data_ptr == nothing
+        data_ptr = new_bytes!(builder, malloc, data_bytesize)
+    end
+
+    # The pointer to the array's data is the first field of the struct.
+    push!(fields, data_ptr)
+
+    # The array's length (i.e., the product of its dimensions) is the
+    # second field of the `jl_array_t` struct.
+    push!(fields, element_count)
+
+    # Synthesize a constant that represents the array's flags.
+    flags = Int16(0)
+    # Set the 'how' field to one.
+    flags |= Int16(1)
+    # Set the 'nDims' field.
+    flags <<= 10
+    flags |= Int16(length(dims))
+    # Set the 'pooled' field to `false`.
+    flags <<= 1
+    flags |= Int16(false)
+    # Set the 'ptrarray' field.
+    flags <<= 1
+    flags |= Int16(isa(llvm_element_type, LLVM.PointerType))
+    # Set the 'isshared' field to `false`.
+    flags <<= 1
+    flags |= Int16(false)
+    # Set the 'isaligned' field to `true`.
+    flags <<= 1
+    flags |= Int16(true)
+    # Add the flags to the `jl_array_t` struct.
+    push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), flags))
+
+    # Set the 'elsize' field.
+    push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), Int16(element_size)))
+
+    # Set the 'offset' field to zero (the array is not a slice).
+    push!(fields, LLVM.ConstantInt(convert(LLVMType, Int16), Int16(0)))
+
+    if length(dims) == 1
+        # Set the 'nrows' field to the number of elements.
+        push!(fields, element_count)
+        # Ditto for the 'maxsize' field.
+        push!(fields, element_count)
+    else
+        # If we're creating a multi-dimensional array, then the
+        # process is slightly different.
+        for i in dims
+            push!(fields, intcast!(builder, i, convert(LLVMType, Csize_t)))
+        end
+    end
+
+    # Synthesize a struct type that neatly represents the data we want
+    # to store.
+    struct_type = LLVM.StructType([llvmtype(f) for f in fields])
+
+    # We now know exactly what data we want to store in each field of the
+    # array's control structure.
+    # All that's left is to actually allocate the array and write that data
+    # to the control structure.
+    obj_ptr = new_object!(
+        builder,
+        malloc,
+        ConstantInt(convert(LLVMType, Csize_t), sizeof(layout, struct_type)),
+        array_type)
+    struct_ptr = bitcast!(
+        builder,
+        addrspacecast!(
+            builder,
+            obj_ptr,
+            LLVM.PointerType(eltype(llvmtype(obj_ptr)))),
+        LLVM.PointerType(struct_type))
+
+    for i in 1:length(fields)
+        val = fields[i]
+        gep = struct_gep!(builder, struct_ptr, i - 1)
+        store!(builder, val, gep)
+    end
+
+    return obj_ptr
+end
+
+# Generates code that extracts array dimensions from a tuple argument.
+function extract_array_dims!(builder, ::Type{Array{T, N}}, dims_tuple) where {T, N}
+    # First cast the tuple value to a size_t pointer in address space zero.
+    tuple_as_size_t = bitcast!(
+        builder,
+        addrspacecast!(
+            builder,
+            dims_tuple,
+            LLVM.PointerType(eltype(llvmtype(dims_tuple)))),
+        LLVM.PointerType(convert(LLVMType, Csize_t)))
+
+    is_literal, ptr = to_literal_pointer(tuple_as_size_t)
+
+    results = []
+    if is_literal
+        # If the tuple is implemented as a literal pointer, then we want to load its elements
+        # ahead of time; the device won't be able to access host-allocated constants.
+        for i in 1:N
+            value = Base.unsafe_load(Base.unsafe_convert(Ptr{Csize_t}, ptr), i)
+            push!(results, LLVM.ConstantInt(convert(LLVMType, Csize_t), value))
+        end
+    else
+        # Otherwise, generate code that loads fields from the tuple.
+        for i in 1:N
+            address = gep!(
+                builder,
+                tuple_as_size_t,
+                [LLVM.ConstantInt(convert(LLVMType, Int32), i - 1)])
+
+            push!(results, load!(builder, address))
+        end
+    end
+    return Tuple(results)
+end
+
+# Lowers function calls that pertain to array operations.
+function lower_array_calls!(fun::LLVM.Function, malloc)
+    changed_any = false
+    alloc_methods = [
+        :jl_alloc_array_1d,
+        :jl_alloc_array_2d,
+        :jl_alloc_array_3d,
+        :jl_new_array
+    ]
+    wrap_methods = [
+        :jl_ptr_to_array,
+        :jl_ptr_to_array_1d
+    ]
+    runtime_methods = [
+        :jl_array_grow_at,
+        :jl_array_grow_beg,
+        :jl_array_grow_end,
+        :jl_array_del_at,
+        :jl_array_del_beg,
+        :jl_array_del_end,
+        :jl_array_sizehint
+    ]
+    visit_literal_pointer_calls(fun) do call, name
+        args = collect(operands(call))[1:end - 1]
+        if name in alloc_methods
+            is_ptr, array_type_ptr = to_literal_pointer(args[1])
+            if is_ptr
+                # We can lower array creation calls if we know the type
+                # of the array to create in advance.
+                array_type = unsafe_pointer_to_objref(array_type_ptr)
+                let builder = Builder(JuliaContext())
+                    position!(builder, call)
+                    if name == :jl_new_array
+                        # jl_new_array requires special treatment. All the other ones are
+                        # pretty simple to handle.
+                        dim_args = extract_array_dims!(builder, array_type, args[2])
+                    else
+                        dim_args = Tuple(args[2:end])
+                    end
+                    new_array = new_array!(builder, malloc, array_type, dim_args)
+                    replace_uses!(call, new_array)
+                    unsafe_delete!(LLVM.parent(call), call)
+                    dispose(builder)
+                end
+                changed_any = true
+            end
+        elseif name in wrap_methods
+            is_ptr, array_type_ptr = to_literal_pointer(args[1])
+            if is_ptr
+                # We can lower array wrapping calls if we know the type
+                # of the array to create in advance.
+                array_type = unsafe_pointer_to_objref(array_type_ptr)
+                let builder = Builder(JuliaContext())
+                    position!(builder, call)
+                    if name == :jl_ptr_to_array
+                        dim_args = extract_array_dims!(builder, array_type, args[3])
+                    else
+                        dim_args = (args[3],)
+                    end
+                    new_array = new_array!(builder, malloc, array_type, dim_args; data_ptr=args[2])
+                    replace_uses!(call, new_array)
+                    unsafe_delete!(LLVM.parent(call), call)
+                    dispose(builder)
+                end
+                changed_any = true
+            end
+        elseif name in runtime_methods
+            let builder = Builder(JuliaContext())
+                position!(builder, call)
+                new_call = call!(builder, Runtime.get(name), args)
+                replace_uses!(call, new_call)
+                unsafe_delete!(LLVM.parent(call), call)
+                dispose(builder)
+            end
+            changed_any = true
+        end
+    end
+    return changed_any
+end
+
+function lower_array_calls_gc!(fun::LLVM.Function)
+    lower_array_calls!(fun, Runtime.get(:gc_malloc_object))
+end
+
+function lower_array_calls_nogc!(fun::LLVM.Function)
+    lower_array_calls!(fun, Runtime.get(:gc_pool_alloc))
+end
+
+# Replaces all uses of a function in a particular module with
+# a compatible function.
+function replace_function!(mod::LLVM.Module, old_name::String, new_name::String)
+    if new_name == old_name
+        # There's nothing to replace if the new function is the same as
+        # the old function.
+        return false
+    end
+
+    # Otherwise, we'll try and find the old function.
+    if !haskey(functions(mod), old_name)
+        # If the old function doesn't even appear in the module, then it's not in
+        # use and we can stop right here.
+        return false
+    end
+
+    old_function = functions(mod)[old_name]
+
+    if haskey(functions(mod), new_name)
+        new_function = functions(mod)[new_name]
+    else
+        # Create a new function.
+        new_function = LLVM.Function(
+            mod,
+            new_name,
+            eltype(llvmtype(old_function)::LLVM.PointerType)::LLVM.FunctionType)
+    end
+
+    # Replace all uses of the old function with the new function.
+    replace_uses!(old_function, new_function)
+
+    return true
+end
+
+# Replaces all uses of the managed memory allocation function in a
+# particular module with a compatible function with the specified name.
+function replace_malloc!(mod::LLVM.Module, malloc_name::String)
+    return replace_function!(mod, "julia.managed_malloc", malloc_name)
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.

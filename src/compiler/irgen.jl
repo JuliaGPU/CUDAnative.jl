@@ -137,7 +137,7 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
     return llvmf, dependencies
 end
 
-function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world)
+function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world; internalize::Bool=true)
     entry, dependencies = @timeit to[] "emission" compile_method_instance(job, method_instance, world)
     mod = LLVM.parent(entry)
 
@@ -236,7 +236,26 @@ function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world)
         current_job = job
 
         linkage!(entry, LLVM.API.LLVMExternalLinkage)
-        internalize!(pm, [LLVM.name(entry)])
+        if internalize
+            # We want to internalize functions so we can optimize
+            # them, but we don't really want to internalize globals
+            # because doing so may cause multiple copies of the same
+            # globals to appear after linking together modules.
+            #
+            # For example, the runtime library includes GC-related globals.
+            # It is imperative that these globals are shared by all modules,
+            # but if they are internalized before they are linked then
+            # they will actually not be internalized.
+            #
+            # Also, don't internalize the entry point, for obvious reasons.
+            non_internalizable_names = [LLVM.name(entry)]
+            for val in globals(mod)
+                if isa(val, LLVM.GlobalVariable)
+                    push!(non_internalizable_names, LLVM.name(val))
+                end
+            end
+            internalize!(pm, non_internalizable_names)
+        end
 
         add!(pm, ModulePass("LowerThrow", lower_throw!))
         add!(pm, FunctionPass("HideUnreachable", hide_unreachable!))

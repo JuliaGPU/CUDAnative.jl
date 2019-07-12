@@ -122,26 +122,30 @@ end
 
 ## functionality to build the runtime library
 
-function emit_function!(mod, cap, f, types, name)
+function emit_function!(mod, cap, f, types, name, malloc)
     tt = Base.to_tuple_type(types)
-    new_mod, entry = codegen(:llvm, CompilerJob(f, tt, cap, #=kernel=# false);
-                             libraries=false, strict=false)
+    # Optimize the module that defines the function, but don't
+    # internalize symbols in that function yet: internalizing
+    # globals may de-alias references to globals in the runtime
+    # library from equivalent references in the kernel.
+    new_mod, entry = codegen(:llvm, CompilerJob(f, tt, cap, #=kernel=# false; malloc=malloc);
+                             libraries=false, strict=false, internalize=false)
     LLVM.name!(entry, name)
     link!(mod, new_mod)
 end
 
-function build_runtime(cap)
+function build_runtime(cap, malloc)
     mod = LLVM.Module("CUDAnative run-time library", JuliaContext())
 
     for method in values(Runtime.methods)
-        emit_function!(mod, cap, method.def, method.types, method.llvm_name)
+        emit_function!(mod, cap, method.def, method.types, method.llvm_name, malloc)
     end
 
     mod
 end
 
-function load_runtime(cap)
-    name = "cudanative.$(cap.major)$(cap.minor).bc"
+function load_runtime(cap, malloc)
+    name = "cudanative.$(malloc).$(cap.major)$(cap.minor).bc"
     path = joinpath(@__DIR__, "..", "..", "deps", "runtime", name)
     mkpath(dirname(path))
 
@@ -151,8 +155,8 @@ function load_runtime(cap)
                 parse(LLVM.Module, read(io), JuliaContext())
             end
         else
-            @info "Building the CUDAnative run-time library for your sm_$(cap.major)$(cap.minor) device, this might take a while..."
-            lib = build_runtime(cap)
+            @info "Building the CUDAnative run-time library for your sm_$(cap.major)$(cap.minor) device (allocating with '$malloc'), this might take a while..."
+            lib = build_runtime(cap, malloc)
             open(path, "w") do io
                 write(io, lib)
             end
