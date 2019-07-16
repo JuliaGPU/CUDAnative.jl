@@ -64,6 +64,7 @@ function optimize!(job::CompilerJob, mod::LLVM.Module, entry::LLVM.Function)
             run!(pm, mod)
         end
     end
+    replace_malloc!(mod, job.malloc)
 
     # PTX-specific optimizations
     ModulePassManager() do pm
@@ -353,6 +354,46 @@ function lower_gc_frame!(fun::LLVM.Function)
     end
 
     return changed
+end
+
+# Replaces all uses of a function in a particular module with
+# a compatible function.
+function replace_function!(mod::LLVM.Module, old_name::String, new_name::String)
+    if new_name == old_name
+        # There's nothing to replace if the new function is the same as
+        # the old function.
+        return false
+    end
+
+    # Otherwise, we'll try and find the old function.
+    if !haskey(functions(mod), old_name)
+        # If the old function doesn't even appear in the module, then it's not in
+        # use and we can stop right here.
+        return false
+    end
+
+    old_function = functions(mod)[old_name]
+
+    if haskey(functions(mod), new_name)
+        new_function = functions(mod)[new_name]
+    else
+        # Create a new function.
+        new_function = LLVM.Function(
+            mod,
+            new_name,
+            eltype(llvmtype(old_function)::LLVM.PointerType)::LLVM.FunctionType)
+    end
+
+    # Replace all uses of the old function with the new function.
+    replace_uses!(old_function, new_function)
+
+    return true
+end
+
+# Replaces all uses of the managed memory allocation function in a
+# particular module with a compatible function with the specified name.
+function replace_malloc!(mod::LLVM.Module, malloc_name::String)
+    return replace_function!(mod, "julia.managed_malloc", malloc_name)
 end
 
 # lower the `julia.ptls_states` intrinsic by removing it, since it is GPU incompatible.

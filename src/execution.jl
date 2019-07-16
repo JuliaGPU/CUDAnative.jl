@@ -8,8 +8,8 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # split keyword arguments to `@cuda` into ones affecting the macro itself, the compiler and
 # the code it generates, or the execution
 function split_kwargs(kwargs)
-    macro_kws    = [:dynamic]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name]
+    macro_kws    = [:dynamic, :init]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name, :malloc]
     call_kws     = [:cooperative, :blocks, :threads, :config, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
@@ -137,13 +137,14 @@ macro cuda(ex...)
 
     # handle keyword arguments that influence the macro's behavior
     dynamic = false
+    env_kwargs = []
     for kwarg in macro_kwargs
         key,val = kwarg.args
         if key == :dynamic
             isa(val, Bool) || throw(ArgumentError("`dynamic` keyword argument to @cuda should be a constant value"))
             dynamic = val::Bool
         else
-            throw(ArgumentError("Unsupported keyword argument '$key'"))
+            push!(env_kwargs, kwarg)
         end
     end
 
@@ -159,6 +160,7 @@ macro cuda(ex...)
                 # we're in kernel land already, so no need to cudaconvert arguments
                 local kernel_tt = Tuple{$((:(Core.Typeof($var)) for var in var_exprs)...)}
                 local kernel = dynamic_cufunction($(esc(f)), kernel_tt)
+                prepare_kernel(kernel; $(map(esc, env_kwargs)...))
                 kernel($(var_exprs...); $(map(esc, call_kwargs)...))
              end)
     else
@@ -173,6 +175,7 @@ macro cuda(ex...)
                     local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
                     local kernel = cufunction($(esc(f)), kernel_tt;
                                               $(map(esc, compiler_kwargs)...))
+                    prepare_kernel(kernel; $(map(esc, env_kwargs)...))
                     kernel(kernel_args...; $(map(esc, call_kwargs)...))
                 end
              end)
@@ -447,9 +450,25 @@ end
     return ex
 end
 
+"""
+    prepare_kernel(kernel::AbstractKernel{F,TT}; init::Function=nop_init_kernel)
+
+Prepares a kernel for execution by setting up an environment for that kernel.
+This function should be invoked just prior to running the kernel. Its
+functionality is included in [`@cuda`](@ref).
+
+The 'init' keyword argument is a function that takes a kernel as argument and
+sets up an environment for the kernel.
+"""
+function prepare_kernel(kernel::AbstractKernel{F,TT}; init::Function=nop_init_kernel) where {F,TT}
+    # Just call the 'init' function for now.
+    init(kernel)
+end
 
 ## device-side API
 
+# There doesn't seem to be a way to access the documentation for the call-syntax,
+# so attach it to the type
 """
     dynamic_cufunction(f, tt=Tuple{})
 
@@ -502,4 +521,9 @@ This is a common requirement, eg. when using shuffle intrinsics.
 function nearest_warpsize(dev::CuDevice, threads::Integer)
     ws = CUDAdrv.warpsize(dev)
     return threads + (ws - threads % ws) % ws
+end
+
+function nop_init_kernel(kernel::AbstractKernel{F,TT}) where {F,TT}
+    # Do nothing.
+    return
 end

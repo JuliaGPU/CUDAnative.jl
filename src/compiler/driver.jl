@@ -91,7 +91,7 @@ function codegen(target::Symbol, job::CompilerJob;
     # always preload the runtime, and do so early; it cannot be part of any timing block
     # because it recurses into the compiler
     if libraries
-        runtime = load_runtime(job.cap)
+        runtime = load_runtime(job.cap, job.malloc)
         runtime_fns = LLVM.name.(defs(runtime))
     end
 

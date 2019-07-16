@@ -12,6 +12,7 @@ module Runtime
 using ..CUDAnative
 using LLVM
 using LLVM.Interop
+using CUDAdrv
 
 
 ## representation of a runtime method instance
@@ -127,8 +128,34 @@ function T_prjlvalue()
     LLVM.PointerType(eltype(T_pjlvalue), Tracked)
 end
 
+# A function that gets replaced by the proper 'malloc' implementation
+# for the context it executes in. This function gets rewritten as a
+# call to the allocator, probably 'malloc'.
+@generated function managed_malloc(sz::Csize_t)
+    T_pint8 = LLVM.PointerType(LLVM.Int8Type(JuliaContext()))
+    T_size = convert(LLVMType, Csize_t)
+    T_ptr = convert(LLVMType, Ptr{UInt8})
+
+    # create function
+    llvm_f, _ = create_function(T_ptr, [T_size])
+    mod = LLVM.parent(llvm_f)
+
+    intr = LLVM.Function(mod, "julia.managed_malloc", LLVM.FunctionType(T_pint8, [T_size]))
+
+    # generate IR
+    Builder(JuliaContext()) do builder
+        entry = BasicBlock(llvm_f, "entry", JuliaContext())
+        position!(builder, entry)
+        ptr = call!(builder, intr, [parameters(llvm_f)[1]])
+        jlptr = ptrtoint!(builder, ptr, T_ptr)
+        ret!(builder, jlptr)
+    end
+
+    call_function(llvm_f, Ptr{UInt8}, Tuple{Csize_t}, :((sz,)))
+end
+
 function gc_pool_alloc(sz::Csize_t)
-    ptr = malloc(sz)
+    ptr = managed_malloc(sz)
     if ptr == C_NULL
         @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
         throw(OutOfMemoryError())
@@ -137,7 +164,6 @@ function gc_pool_alloc(sz::Csize_t)
 end
 
 compile(gc_pool_alloc, Any, (Csize_t,), T_prjlvalue)
-
 
 ## boxing and unboxing
 
@@ -226,5 +252,79 @@ for (T, t) in [Int8   => :int8,  Int16  => :int16,  Int32  => :int32,  Int64  =>
     end
 end
 
+## Bump allocator.
+
+# Gets a pointer to a global with a particular name. If the global
+# does not exist yet, then it is declared in the global memory address
+# space.
+@generated function get_global_pointer(::Val{global_name}, ::Type{T})::CUDAnative.DevicePtr{T} where {global_name, T}
+    T_global = convert(LLVMType, T)
+    T_result = convert(LLVMType, Ptr{T})
+
+    # Create a thunk that computes a pointer to the global.
+    llvm_f, _ = create_function(T_result)
+    mod = LLVM.parent(llvm_f)
+
+    # Figure out if the global has been defined already.
+    global_set = LLVM.globals(mod)
+    global_name_string = String(global_name)
+    if haskey(global_set, global_name_string)
+        global_var = global_set[global_name_string]
+    else
+        # If the global hasn't been defined already, then we'll define
+        # it in the global address space, i.e., address space one.
+        global_var = GlobalVariable(mod, T_global, global_name_string, 1)
+        linkage!(global_var, LLVM.API.LLVMLinkOnceODRLinkage)
+        initializer!(global_var, LLVM.null(T_global))
+    end
+
+    # Generate IR that computes the global's address.
+    Builder(JuliaContext()) do builder
+        entry = BasicBlock(llvm_f, "entry", JuliaContext())
+        position!(builder, entry)
+
+        # Cast the global variable's type to the result type.
+        result = ptrtoint!(builder, global_var, T_result)
+        ret!(builder, result)
+    end
+
+    # Call the function.
+    quote
+        CUDAnative.DevicePtr{T, CUDAnative.AS.Generic}(convert(Csize_t, $(call_function(llvm_f, Ptr{T}))))
+    end
+end
+
+# Allocates `bytesize` bytes of storage by bumping the global bump
+# allocator pointer.
+function bump_alloc(bytesize::Csize_t)::Ptr{UInt8}
+    ptr = get_global_pointer(Val(:bump_alloc_ptr), Csize_t)
+    chunk_address = CUDAnative.atomic_add!(ptr, bytesize)
+    end_ptr = unsafe_load(get_global_pointer(Val(:bump_alloc_end), Csize_t))
+    if chunk_address < end_ptr
+        return convert(Ptr{UInt8}, chunk_address)
+    else
+        return C_NULL
+    end
+end
+
+compile(bump_alloc, Ptr{UInt8}, (Csize_t,))
+
+function maybe_set_global(kernel, name, value::T) where T
+    try
+        global_handle = CuGlobal{T}(kernel.mod, name)
+        set(global_handle, value)
+    catch exception
+        # The interrupt pointer may not have been declared (because it is unused).
+        # In that case, we should do nothing.
+        if !isa(exception, CUDAdrv.CuError) || exception.code != CUDAdrv.ERROR_NOT_FOUND.code
+            rethrow()
+        end
+    end
+end
+
+function bump_alloc_init!(kernel, buffer_start, buffer_size)
+    maybe_set_global(kernel, "bump_alloc_ptr", buffer_start)
+    maybe_set_global(kernel, "bump_alloc_end", buffer_start + buffer_size)
+end
 
 end
