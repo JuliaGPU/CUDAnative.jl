@@ -32,8 +32,8 @@
 @inline atan(x::Float64) = @wrap __nv_atan(x::double)::double
 @inline atan(x::Float32) = @wrap __nv_atanf(x::float)::float
 
-@inline atan2(x::Float64, y::Float64) = @wrap __nv_atan2(x::double, y::double)::double
-@inline atan2(x::Float32, y::Float32) = @wrap __nv_atan2f(x::float, y::float)::float
+@inline atan(x::Float64, y::Float64) = @wrap __nv_atan2(x::double, y::double)::double
+@inline atan(x::Float32, y::Float32) = @wrap __nv_atan2f(x::float, y::float)::float
 
 
 ## hyperbolic
