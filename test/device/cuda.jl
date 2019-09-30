@@ -981,6 +981,16 @@ end
     end
 end
 
+@testset "exceptions" begin
+    @testset for T in [Int32, Int64, UInt32, UInt64]
+        a = CuArray([typemax(T)])
+        function kernal(T, a)
+            @atomic a[1] = 1
+            return
+        end
+        @cuda threads=32 kernal(T, a)
+        @test Array(a)[1] == 1
+    end
 end
 
 ############################################################################################
