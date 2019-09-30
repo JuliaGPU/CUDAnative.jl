@@ -986,6 +986,8 @@ end
         a = CuArray([typemax(T)])
         function kernal(T, a)
             @atomic a[1] = 1
+            @atomic a[1] = "1"
+            @atomic a[1] = i
             return
         end
         @cuda threads=32 kernal(T, a)
