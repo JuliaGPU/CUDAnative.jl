@@ -319,7 +319,7 @@ macro atomic(ex)
     if ex.head == :(=)
         ref = ex.args[1]
         rhs = ex.args[2]
-        if typeof(rhs) <: Number || typeof(rhs) <: String
+        if typeof(rhs) <: Number || typeof(rhs) <: String || typeof(rhs) <: Symbol
             error("right-hand side of an @atomic assignment cannot be a literal")
         end
         rhs.head == :call || error("right-hand side of an @atomic assignment should be a call")
