@@ -268,13 +268,6 @@ struct wmma_matrix_a <: wmma_fragment_use end
 struct wmma_matrix_b <: wmma_fragment_use end
 struct wmma_accumulator <: wmma_fragment_use end
 
-map_matrix_to_use = Dict(
-                      "a" => wmma_matrix_a,
-                      "b" => wmma_matrix_b,
-                      "c" => wmma_accumulator,
-                      "d" => wmma_accumulator
-                        )
-
 
 export wmma_fragment
 
@@ -289,6 +282,29 @@ end
 export wmma_config
 struct wmma_config{M, N, K} end
 
+# ---------
+# Constants
+# ---------
+
+map_matrix_to_use = Dict(
+                      "a" => wmma_matrix_a,
+                      "b" => wmma_matrix_b,
+                      "c" => wmma_accumulator,
+                      "d" => wmma_accumulator
+                        )
+
+map_address_space_to_ty = Dict(
+                               "" => AS.Generic,
+                               "shared" => AS.Shared,
+                               "global" => AS.Global
+                              )
+
+# ----------------
+# Helper functions
+# ----------------
+
+get_matrix_use(mat) = map_matrix_to_use[mat]
+get_address_space(as) = map_address_space_to_ty[as]
 
 # ---------
 # WMMA load
@@ -296,17 +312,24 @@ struct wmma_config{M, N, K} end
 
 export wmma_load_a, wmma_load_b, wmma_load_c
 
-for mat in ["a", "b", "c"]
-    layout = "col"
-    shape = "m16n16k16"
-    addr_space = ""
-    elem_type = "f16"
+for mat in ["a", "b", "c"],
+    layout in ["col", "row"],
+    shape in ["m16n16k16"],
+    addr_space in ["", "shared", "global"],
+    stride in ["stride"],
+    elem_type in ["f16", "f32"]
+
+
+    # Float32 is only supported for C
+    if (elem_type == "f32") && (mat != "c")
+        continue
+    end
 
     # Name of Julia function
     func_name = Symbol("wmma_load_$mat")
 
     # Name of the Julia wrapper
-    wrapper = Symbol("llvm_wmma_load_$(mat)_$(layout)_$(shape)_stride_$(elem_type)")
+    wrapper = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get fragment size
     frag_sz = get_frag_sz(mat, elem_type)
@@ -315,17 +338,24 @@ for mat in ["a", "b", "c"]
     julia_type = get_jl_ty(mat, elem_type)
 
     # Get matrix use type
-    matrix_use = map_matrix_to_use[mat]
+    matrix_use = get_matrix_use(mat)
 
     # Get layout type
-    layout_ty = (mat == "c") ? wmma_unspecified : (layout == "col") ? wmma_col_major : wmma_row_major
+    layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
+    layout_ret_ty = (mat == "c") ? wmma_unspecified : layout_ty
 
-    @eval function $func_name(addr::DevicePtr{Float16, AS.Global},
+    # Get pointer type
+    ptr_ty = (elem_type == "f32") ? Float32 : Float16
+
+    # Get address space type
+    as_ty = get_address_space(addr_space)
+
+    @eval function $func_name(addr::DevicePtr{$ptr_ty, $as_ty},
                               stride::Number,
-                              layout::Type{wmma_col_major},
+                              layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16}})
         x = $wrapper(addr, stride)
-        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_ty, $matrix_use}(x)
+        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_ret_ty, $matrix_use}(x)
     end
 end
 

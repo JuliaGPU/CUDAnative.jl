@@ -134,7 +134,7 @@
 
     @testset "CUDA C-style API" begin
 
-        @testset "One specific case" begin
+        @testset "Matrix multiply-accumulate" begin
             a     = rand(Float16, (16, 16))
             b     = rand(Float16, (16, 16))
             c     = rand(Float16, (16, 16))
