@@ -463,21 +463,19 @@ end
 # WMMA fill fragment
 # ------------------
 
-export wmma_fill_a, wmma_fill_b, wmma_fill_c
+export wmma_fill_c
 
-for mat in ["a", "b", "c"],
+for mat in ["c"],
     elem_type in ["f16", "f32"]
-
-    # Float32 is only supported for C
-    if (elem_type == "f32") && (mat != "c")
-        continue
-    end
 
     # Name of the Julia function
     func_name = Symbol("wmma_fill_$mat")
 
     # Get fragment size
     frag_sz = get_frag_sz(mat, elem_type)
+
+    # Get Julia type
+    julia_type = get_jl_ty(mat, elem_type)
 
     # Value type
     val_type = (elem_type == "f16") ? Float16 : Float32
@@ -491,6 +489,6 @@ for mat in ["a", "b", "c"],
 
     @eval function $func_name(value::$val_type)
         x = $tuple
-        return x
+        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, wmma_unspecified, wmma_accumulator}(x)
     end
 end
