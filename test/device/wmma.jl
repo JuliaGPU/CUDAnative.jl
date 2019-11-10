@@ -134,34 +134,46 @@
 
     @testset "CUDA C-style API" begin
 
-        @testset "Matrix multiply-accumulate" begin
+        @testset "MAC: A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [wmma_col_major, wmma_row_major],
+            b_layout in [wmma_col_major, wmma_row_major],
+            c_layout in [wmma_col_major, wmma_row_major],
+            d_layout in [wmma_col_major, wmma_row_major],
+            c_type in [Float16, Float32],
+            d_type in [Float16, Float32]
+
             a     = rand(Float16, (16, 16))
             b     = rand(Float16, (16, 16))
-            c     = rand(Float16, (16, 16))
-            d     = Array{Float16}(undef, (16, 16))
+            c     = rand(c_type, (16, 16))
+            d     = Array{d_type}(undef, (16, 16))
 
             a_dev = CuArray(a)
             b_dev = CuArray(b)
             c_dev = CuArray(c)
             d_dev = CuArray(d)
 
-            function kernel(a_dev, b_dev, c_dev, d_dev)
+            @eval function kernel(a_dev, b_dev, c_dev, d_dev)
                 conf = wmma_config{16, 16, 16}
 
-                a_frag = wmma_load_a(pointer(a_dev), 16, wmma_col_major, conf)
-                b_frag = wmma_load_b(pointer(b_dev), 16, wmma_col_major, conf)
-                c_frag = wmma_load_c(pointer(c_dev), 16, wmma_col_major, conf)
+                a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
+                b_frag = wmma_load_b(pointer(b_dev), 16, $b_layout, conf)
+                c_frag = wmma_load_c(pointer(c_dev), 16, $c_layout, conf)
 
-                d_frag = wmma_mma(a_frag, b_frag, c_frag, Float16)
+                d_frag = wmma_mma(a_frag, b_frag, c_frag, $d_type)
 
-                wmma_store_d(pointer(d_dev), d_frag, 16, wmma_col_major, conf)
+                wmma_store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
 
                 return
             end
 
             @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
             d = Array(d_dev)
-            @test a * b + c ≈ d rtol=0.01
+
+            new_a = (a_layout == wmma_col_major) ? a : transpose(a)
+            new_b = (b_layout == wmma_col_major) ? b : transpose(b)
+            new_c = (c_layout == wmma_col_major) ? c : transpose(c)
+            new_d = (d_layout == wmma_col_major) ? d : transpose(d)
+
+            @test new_a * new_b + new_c ≈ new_d rtol=0.01
         end
 
     end
