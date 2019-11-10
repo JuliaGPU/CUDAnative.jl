@@ -161,7 +161,7 @@
                 if $do_mac
                     c_frag = wmma_load_c(pointer(c_dev), 16, $c_layout, conf)
                 else
-                    c_frag = wmma_fill_c($c_type(0))
+                    c_frag = wmma_fill_c($c_type(0), conf)
                 end
 
                 d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)

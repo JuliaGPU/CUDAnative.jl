@@ -487,7 +487,9 @@ for mat in ["c"],
         tuple = :(ntuple(i -> value, $frag_sz))
     end
 
-    @eval function $func_name(value::$val_type)
+    @eval function $func_name(value::$val_type,
+                              config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type}
+
         x = $tuple
         return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, wmma_unspecified, wmma_accumulator}(x)
     end
