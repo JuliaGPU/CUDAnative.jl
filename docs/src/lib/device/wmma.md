@@ -135,4 +135,76 @@ end
 
 ## CUDA C-like API
 
-NYI
+TODO
+
+### Fragment
+```@docs
+CUDAnative.wmma_fragment_layout
+CUDAnative.wmma_row_major
+CUDAnative.wmma_col_major
+CUDAnative.wmma_unspecified
+CUDAnative.wmma_fragment
+```
+
+### WMMA configuration
+```@docs
+CUDAnative.wmma_config
+```
+
+### Load matrix
+```@docs
+CUDAnative.wmma_load_a
+CUDAnative.wmma_load_b
+CUDAnative.wmma_load_c
+```
+
+### Perform multiply-accumulate
+```@docs
+CUDAnative.wmma_mma
+```
+
+### Store matrix
+```@docs
+CUDAnative.wmma_store_d
+```
+
+### Fill fragment
+```@docs
+CUDAnative.wmma_fill_c
+```
+
+### Example
+
+```julia
+using CUDAnative
+using CuArrays
+using Test
+
+a     = rand(Float16, (16, 16))
+b     = rand(Float16, (16, 16))
+c     = rand(Float32, (16, 16))
+
+a_dev = CuArray(a)
+b_dev = CuArray(b)
+c_dev = CuArray(c)
+d_dev = similar(c_dev)
+
+function kernel(a_dev, b_dev, c_dev, d_dev)
+    conf = wmma_config{16, 16, 16, Float32}
+
+    a_frag = wmma_load_a(pointer(a_dev), 16, wmma_col_major, conf)
+    b_frag = wmma_load_b(pointer(b_dev), 16, wmma_col_major, conf)
+    c_frag = wmma_load_c(pointer(c_dev), 16, wmma_col_major, conf)
+
+    d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
+
+    wmma_store_d(pointer(d_dev), d_frag, 16, wmma_col_major, conf)
+
+    return
+end
+
+@cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
+d = Array(d_dev)
+
+@test a * b + c ≈ d rtol=0.01
+```
