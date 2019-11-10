@@ -19,6 +19,7 @@ makedocs(
             "lib/reflection.md",
             "Device Code" => [
                 "lib/device/cuda.md",
+                "lib/device/wmma.md",
                 "lib/device/array.md"
             ]
         ]
