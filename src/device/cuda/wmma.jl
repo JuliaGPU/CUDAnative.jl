@@ -280,7 +280,7 @@ end
 # ------------------
 
 export wmma_config
-struct wmma_config{M, N, K} end
+struct wmma_config{M, N, K, d_type} end
 
 # ---------
 # Constants
@@ -353,7 +353,7 @@ for mat in ["a", "b", "c"],
     @eval function $func_name(addr::DevicePtr{$ptr_ty, $as_ty},
                               stride::Number,
                               layout::Type{$layout_ty},
-                              config::Type{wmma_config{16, 16, 16}})
+                              config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
         x = $wrapper(addr, stride)
         return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use}(x)
     end
@@ -402,7 +402,7 @@ for a_layout in ["col", "row"],
     @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_frag_sz, $a_julia_type, $a_layout_ty, wmma_matrix_a},
                             b::wmma_fragment{16, 16, 16, $b_frag_sz, $b_julia_type, $b_layout_ty, wmma_matrix_b},
                             c::wmma_fragment{16, 16, 16, $c_frag_sz, $c_julia_type, wmma_unspecified, wmma_accumulator},
-                            d_type::Type{$dispatch_ty})
+                            conf::Type{wmma_config{16, 16, 16, $dispatch_ty}})
         x = $wrapper(a.x, b.x, c.x)
         return wmma_fragment{16, 16, 16, $d_frag_sz, $d_julia_type, wmma_unspecified, wmma_accumulator}(x)
     end
@@ -451,7 +451,7 @@ for mat in ["d"],
                               d::wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use},
                               stride::Number,
                               layout::Type{$layout_ty},
-                              config::Type{wmma_config{16, 16, 16}})
+                              config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
         $wrapper(addr, d.x, stride)
         return nothing
     end

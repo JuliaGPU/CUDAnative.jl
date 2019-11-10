@@ -152,13 +152,13 @@
             d_dev = CuArray(d)
 
             @eval function kernel(a_dev, b_dev, c_dev, d_dev)
-                conf = wmma_config{16, 16, 16}
+                conf = wmma_config{16, 16, 16, $d_type}
 
                 a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
                 b_frag = wmma_load_b(pointer(b_dev), 16, $b_layout, conf)
                 c_frag = wmma_load_c(pointer(c_dev), 16, $c_layout, conf)
 
-                d_frag = wmma_mma(a_frag, b_frag, c_frag, $d_type)
+                d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
 
                 wmma_store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
 
