@@ -56,8 +56,12 @@ get_jl_ty(matrix, ptx_el_type) = map_ptx_to_jl[ptx_el_type]
 get_frag_sz(matrix, ptx_el_type) = map_frag_sizes["$matrix.$ptx_el_type"]
 
 ################################################################################
-# MATRIX LOAD
+# LOW LEVEL API
 ################################################################################
+
+# -----------
+# Matrix load
+# -----------
 
 for mat in ["a", "b", "c"],
     layout in ["col", "row"],
@@ -111,9 +115,9 @@ for mat in ["a", "b", "c"],
     @eval export $func_name
 end
 
-################################################################################
-# MATRIX STORE
-################################################################################
+# ------------
+# Matrix store
+# ------------
 
 for mat in ["d"],
     layout in ["col", "row"],
@@ -159,9 +163,9 @@ for mat in ["d"],
     @eval export $func_name
 end
 
-################################################################################
-# MATRIX MULTIPLY ACCUMULATE
-################################################################################
+# --------------------------
+# Matrix multiply accumulate
+# --------------------------
 
 for a_layout in ["col", "row"],
     b_layout in ["col", "row"],
