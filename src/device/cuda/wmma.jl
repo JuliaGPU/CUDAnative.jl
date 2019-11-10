@@ -342,7 +342,7 @@ for mat in ["a", "b", "c"],
 
     # Get layout type
     layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
-    layout_ret_ty = (mat == "c") ? wmma_unspecified : layout_ty
+    layout_frag_ty = (mat == "c") ? wmma_unspecified : layout_ty
 
     # Get pointer type
     ptr_ty = (elem_type == "f32") ? Float32 : Float16
@@ -355,7 +355,7 @@ for mat in ["a", "b", "c"],
                               layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16}})
         x = $wrapper(addr, stride)
-        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_ret_ty, $matrix_use}(x)
+        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use}(x)
     end
 end
 
@@ -380,13 +380,47 @@ end
 
 export wmma_store_d
 
-function wmma_store_d(addr::DevicePtr{Float16, AS.Global},
-                      d::wmma_fragment{16, 16, 16, 4, NTuple{2, VecElement{Float16}}, wmma_unspecified, wmma_accumulator},
-                      stride::Number,
-                      layout::Type{wmma_col_major},
-                      config::Type{wmma_config{16, 16, 16}})
-    llvm_wmma_store_d_col_m16n16k16_stride_f16(addr, d.x, stride)
-    return nothing
+for mat in ["d"],
+    layout in ["col", "row"],
+    shape in ["m16n16k16"],
+    addr_space in ["", "shared", "global"],
+    stride in ["stride"],
+    elem_type in ["f16", "f32"]
+
+    # Name of Julia function
+    func_name = Symbol("wmma_store_$mat")
+
+    # Name of the Julia wrapper
+    wrapper = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
+
+    # Get fragment size
+    frag_sz = get_frag_sz(mat, elem_type)
+
+    # Get Julia element type
+    julia_type = get_jl_ty(mat, elem_type)
+
+    # Get matrix use type
+    matrix_use = get_matrix_use(mat)
+
+    # Get layout type
+    layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
+    layout_frag_ty = wmma_unspecified
+
+    # Get pointer type
+    ptr_ty = (elem_type == "f32") ? Float32 : Float16
+
+    # Get address space type
+    as_ty = get_address_space(addr_space)
+
+    @eval function $func_name(addr::DevicePtr{$ptr_ty, $as_ty},
+                              d::wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use},
+                              stride::Number,
+                              layout::Type{$layout_ty},
+                              config::Type{wmma_config{16, 16, 16}})
+        $wrapper(addr, d.x, stride)
+        return nothing
+    end
+
 end
 
 
