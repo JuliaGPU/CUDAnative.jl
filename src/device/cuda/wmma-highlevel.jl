@@ -32,33 +32,53 @@ export wmma_config
 struct wmma_config{M, N, K} end
 
 ################################################################################
+# CONSTANTS
+################################################################################
+
+map_matrix_to_use = Dict(
+                      "a" => wmma_matrix_a,
+                      "b" => wmma_matrix_b,
+                      "c" => wmma_accumulator,
+                      "d" => wmma_accumulator
+                        )
+
+################################################################################
 # WMMA LOAD
 ################################################################################
 
 export wmma_load_a, wmma_load_b, wmma_load_c
 
-function wmma_load_a(addr::DevicePtr{Float16, AS.Global},
-                     stride::Number,
-                     layout::Type{wmma_col_major},
-                     config::Type{wmma_config{16, 16, 16}})
-    x = llvm_wmma_load_a_col_m16n16k16_stride_f16(addr, stride)
-    return wmma_fragment{16, 16, 16, 8, NTuple{2, VecElement{Float16}}, wmma_col_major, wmma_matrix_a}(x)
-end
+for mat in ["a", "b", "c"]
+    layout = "col"
+    shape = "m16n16k16"
+    addr_space = ""
+    elem_type = "f16"
 
-function wmma_load_b(addr::DevicePtr{Float16, AS.Global},
-                     stride::Number,
-                     layout::Type{wmma_col_major},
-                     config::Type{wmma_config{16, 16, 16}})
-    x = llvm_wmma_load_b_col_m16n16k16_stride_f16(addr, stride)
-    return wmma_fragment{16, 16, 16, 8, NTuple{2, VecElement{Float16}}, wmma_col_major, wmma_matrix_b}(x)
-end
+    # Name of Julia function
+    func_name = Symbol("wmma_load_$mat")
 
-function wmma_load_c(addr::DevicePtr{Float16, AS.Global},
-                     stride::Number,
-                     layout::Type{wmma_col_major},
-                     config::Type{wmma_config{16, 16, 16}})
-    x = llvm_wmma_load_c_col_m16n16k16_stride_f16(addr, stride)
-    return wmma_fragment{16, 16, 16, 4, NTuple{2, VecElement{Float16}}, wmma_unspecified, wmma_accumulator}(x)
+    # Name of the Julia wrapper
+    wrapper = Symbol("llvm_wmma_load_$(mat)_$(layout)_$(shape)_stride_$(elem_type)")
+
+    # Get fragment size
+    frag_sz = get_frag_sz(mat, elem_type)
+
+    # Get Julia element type
+    julia_type = get_jl_ty(mat, elem_type)
+
+    # Get matrix use type
+    matrix_use = map_matrix_to_use[mat]
+
+    # Get layout type
+    layout_ty = (mat == "c") ? wmma_unspecified : (layout == "col") ? wmma_col_major : wmma_row_major
+
+    @eval function $func_name(addr::DevicePtr{Float16, AS.Global},
+                              stride::Number,
+                              layout::Type{wmma_col_major},
+                              config::Type{wmma_config{16, 16, 16}})
+        x = $wrapper(addr, stride)
+        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_ty, $matrix_use}(x)
+    end
 end
 
 ################################################################################
