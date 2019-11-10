@@ -152,7 +152,7 @@
                 b_frag = wmma_load_b(pointer(b_dev), 16, wmma_col_major, conf)
                 c_frag = wmma_load_c(pointer(c_dev), 16, wmma_col_major, conf)
 
-                d_frag = wmma_mma(a_frag, b_frag, c_frag)
+                d_frag = wmma_mma(a_frag, b_frag, c_frag, Float16)
 
                 wmma_store_d(pointer(d_dev), d_frag, 16, wmma_col_major, conf)
 

@@ -366,11 +366,46 @@ end
 
 export wmma_mma
 
-function wmma_mma(a::wmma_fragment{16, 16, 16, 8, NTuple{2, VecElement{Float16}}, wmma_col_major, wmma_matrix_a},
-                  b::wmma_fragment{16, 16, 16, 8, NTuple{2, VecElement{Float16}}, wmma_col_major, wmma_matrix_b},
-                  c::wmma_fragment{16, 16, 16, 4, NTuple{2, VecElement{Float16}}, wmma_unspecified, wmma_accumulator})
-    x = llvm_wmma_mma_col_col_m16n16k16_f16_f16(a.x, b.x, c.x)
-    return wmma_fragment{16, 16, 16, 4, NTuple{2, VecElement{Float16}}, wmma_unspecified, wmma_accumulator}(x)
+for a_layout in ["col", "row"],
+    b_layout in ["col", "row"],
+    shape in ["m16n16k16"],
+    d_elem_type in ["f16", "f32"],
+    c_elem_type in ["f16", "f32"],
+    b_elem_type in ["f16"],
+    a_elem_type in ["f16"]
+
+    # Name of the Julia wrapper
+    wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
+
+    # Information about a
+    a_frag_sz = get_frag_sz("a", a_elem_type)
+    a_julia_type = get_jl_ty("a", a_elem_type)
+    a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
+
+    # Information about b
+    b_frag_sz = get_frag_sz("b", b_elem_type)
+    b_julia_type = get_jl_ty("b", b_elem_type)
+    b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
+
+    # Information about c
+    c_frag_sz = get_frag_sz("c", c_elem_type)
+    c_julia_type = get_jl_ty("c", c_elem_type)
+
+    # Information about d
+    d_frag_sz = get_frag_sz("d", d_elem_type)
+    d_julia_type = get_jl_ty("d", d_elem_type)
+
+    # We need some way to select if we want d to be 16 or 32-bit floating point
+    # during dispatch.
+    dispatch_ty = (d_elem_type == "f16") ? Float16 : Float32
+
+    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_frag_sz, $a_julia_type, $a_layout_ty, wmma_matrix_a},
+                            b::wmma_fragment{16, 16, 16, $b_frag_sz, $b_julia_type, $b_layout_ty, wmma_matrix_b},
+                            c::wmma_fragment{16, 16, 16, $c_frag_sz, $c_julia_type, wmma_unspecified, wmma_accumulator},
+                            d_type::Type{$dispatch_ty})
+        x = $wrapper(a.x, b.x, c.x)
+        return wmma_fragment{16, 16, 16, $d_frag_sz, $d_julia_type, wmma_unspecified, wmma_accumulator}(x)
+    end
 end
 
 
