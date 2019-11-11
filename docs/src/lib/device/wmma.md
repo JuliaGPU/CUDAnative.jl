@@ -135,7 +135,23 @@ end
 
 ## CUDA C-like API
 
-TODO
+The main difference between the CUDA C-like API and the lower level wrappers, is that the former enforces several constraints when working with WMMA.
+For example, it ensures that the ``A`` fragment argument to the MMA instruction was obtained by a `load_a` call, and not by a `load_b` or `load_c`.
+Additionally, it makes sure that the data type and storage layout of the load/store operations and the MMA operation match.
+
+The CUDA C-like API heavily uses Julia's dispatch mechanism.
+As such, the method names are much shorter than the LLVM intrinsic wrappers, as most information is baked into the type of the arguments rather than the method name.
+
+
+Note that, in CUDA C++, the fragment is responsible for both the storage of intermediate results and the WMMA configuration.
+All CUDA C++ WMMA calls are function templates that take the resultant fragment as a by-reference argument.
+As a result, the type of this argument can be used during overload resolution to select the correct WMMA instruction to call.
+
+In contrast, the API in Julia separates the WMMA storage ([`wmma_fragment`](@ref)) and configuration ([`wmma_config`](@ref)).
+Instead of taking the resultant fragment by reference, the Julia functions just return it.
+This makes the dataflow clearer, but it also means that the type of that fragment cannot be used for selection of the correct WMMA instruction.
+Thus, there is still a limited amount of information that cannot be inferred from the argument types, but must nonetheless match for all WMMA operations, such as the overall shape of the MMA.
+This is accomplished by a separate "WMMA configuration" (see [`wmma_config`](@ref)) that you create once, and then give as an argument to all intrinsics.
 
 ### Fragment
 ```@docs
