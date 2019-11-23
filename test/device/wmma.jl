@@ -2,17 +2,27 @@
 
 ################################################################################
 
+@eval generic_to_shared(ptr) = Base.llvmcall(
+    "
+    %ptr.generic = inttoptr i64 %0 to i8*
+    %ptr.shared = addrspacecast i8* %ptr.generic to i8 addrspace(3)*
+    %ret = ptrtoint i8 addrspace(3)* %ptr.shared to i64
+    ret i64 %ret",
+    Int64,
+    Tuple{Int64},
+    convert(Int64, ptr))
+
+################################################################################
+
     @testset "LLVM intrinsics" begin
 
         @testset "llvm_wmma_load" begin
             @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["a", "b", "c"],
                 layout in ["row", "col"],
                 shape in ["m16n16k16"],
-                addr_space in [""],
+                addr_space in ["", "_global", "_shared"],
                 stride in ["stride"],
                 elem_type in ["f16", "f32"]
-
-                # TODO: Test address space?
 
                 # Float32 is only supported for C
                 if (elem_type == "f32") && (mat != "c")
@@ -23,17 +33,30 @@
                 array_ty = elem_type == "f16" ? Float16 : Float32
                 expected = elem_type == "f16" ? (VecElement{Float16}(42), VecElement{Float16}(42)) : Float32(42)
 
+                # Address-space dependent variables
+                do_shared_test = (addr_space == "_shared")
+
                 # Get the function name
-                func = getfield(Main, Symbol("llvm_wmma_load_$(mat)_$(layout)_$(shape)_stride_$(elem_type)"))
+                func = Symbol("llvm_wmma_load_$(mat)_$(layout)_$(shape)$(addr_space)_stride_$(elem_type)")
 
                 input      = 42 * ones(array_ty, (16, 16))
                 input_dev  = CuArray(input)
                 result     = Array{Bool}(undef, 1)
                 result_dev = CuArray(result)
 
-                function kernel(input_dev, result_dev)
-                    data = func(pointer(input_dev), 16)
-                    result_dev[1] = all(val -> val == expected, data)
+                @eval @inbounds function kernel(input_dev, result_dev)
+                    if $do_shared_test
+                        input_shared = @cuStaticSharedMem($array_ty, 256)
+                        fill!(input_shared, 42)
+
+                        data = $func(generic_to_shared(input_shared.ptr), 16)
+
+                        result_dev[1] = all(val -> val == $expected, data)
+                    else
+                        data = $func(pointer(input_dev), 16)
+                        result_dev[1] = all(val -> val == $expected, data)
+                    end
+
                     return
                 end
 
@@ -46,11 +69,9 @@
             @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["d"],
                 layout in ["row", "col"],
                 shape in ["m16n16k16"],
-                addr_space in [""],
+                addr_space in ["", "_global", "_shared"],
                 stride in ["stride"],
                 elem_type in ["f16", "f32"]
-
-                # TODO: Test address space?
 
                 # Type-dependent variables
                 array_ty = elem_type == "f16" ? Float16 : Float32
@@ -63,13 +84,28 @@
                     ) : (42, 42, 42, 42, 42, 42, 42, 42)
 
                 # Get the function name
-                func = getfield(Main, Symbol("llvm_wmma_store_$(mat)_$(layout)_$(shape)_stride_$(elem_type)"))
+                func = Symbol("llvm_wmma_store_$(mat)_$(layout)_$(shape)$(addr_space)_stride_$(elem_type)")
+
+                # Address-space dependent variables
+                do_shared_test = (addr_space == "_shared")
 
                 output     = Array{array_ty}(undef, (16, 16))
                 output_dev = CuArray(output)
 
-                function kernel(output_dev)
-                    func(pointer(output_dev), data, 16)
+
+                @eval function kernel(output_dev)
+                    if $do_shared_test
+                        shared_mem = @cuStaticSharedMem($array_ty, 256)
+                        ptr = generic_to_shared(pointer(shared_mem))
+                        $func(ptr, $data, 16)
+
+                        for i = 1:256
+                            @inbounds output_dev[i] = shared_mem[i]
+                        end
+                    else
+                        $func(pointer(output_dev), $data, 16)
+                    end
+
                     return
                 end
 
