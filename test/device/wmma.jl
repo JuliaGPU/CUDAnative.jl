@@ -161,7 +161,7 @@
                 new_a = (a_layout == "col" ? a : transpose(a))
                 new_b = (b_layout == "col" ? b : transpose(b))
 
-                @test new_a * new_b + c ≈ Array(d_dev) rtol=0.01
+                @test all(isapprox.(new_a * new_b + c, Array(d_dev); rtol=sqrt(eps(Float16))))
             end
         end
     end
