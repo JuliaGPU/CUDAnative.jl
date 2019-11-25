@@ -216,9 +216,9 @@
             new_d = (d_layout == wmma_col_major) ? d : transpose(d)
 
             if do_mac
-                @test new_a * new_b + new_c ≈ new_d rtol=0.01
+                @test all(isapprox.(new_a * new_b + new_c, new_d; rtol=sqrt(eps(Float16))))
             else
-                @test new_a * new_b ≈ new_d rtol=0.01
+                @test all(isapprox.(new_a * new_b, new_d; rtol=sqrt(eps(Float16))))
             end
         end
 
