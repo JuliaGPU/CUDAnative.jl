@@ -81,7 +81,7 @@ for mat in ["a", "b", "c"],
     func_name = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("@llvm", "nvvm", "wmma", "load", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
+    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "load", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
 
     # Determine types for this (matrix, elem_type) combination
     sz = get_frag_sz(mat, elem_type)
@@ -106,12 +106,11 @@ for mat in ["a", "b", "c"],
     ret [$sz x $lc_ty] %ret.aggr.$(sz-1)
     ")
 
-    @eval $func_name(src_addr, stride) = Base.llvmcall($ir,
-        NTuple{$sz, $jl_ty},
-        Tuple{Int64, Int32},
-        convert(Int64, src_addr),
-        convert(Int32, stride))
+    base_type = elem_type == "f16" ? Float16 : Float32
 
+    ccall_name = "extern $llvm_intr"
+
+    @eval $func_name(src_addr, stride) = ccall($ccall_name, llvmcall, NTuple{$sz, $jl_ty}, (Ref{$base_type}, Int32), src_addr, stride)
     @eval export $func_name
 end
 

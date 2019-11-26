@@ -55,9 +55,9 @@ if length(devices()) > 0
 end
 cap = CUDAnative.current_capability()
 
-include("base.jl")
-include("pointer.jl")
-include("codegen.jl")
+#= include("base.jl") =#
+#= include("pointer.jl") =#
+#= include("codegen.jl") =#
 
 if dev === nothing
     @warn("No CUDA-capable devices available; skipping on-device tests.")
@@ -65,14 +65,14 @@ else
     if capability(dev) < v"2.0"
         @warn("native execution not supported on SM < 2.0")
     else
-        include("device/codegen.jl")
-        include("device/execution.jl")
-        include("device/pointer.jl")
-        include("device/array.jl")
-        include("device/cuda.jl")
+        #= include("device/codegen.jl") =#
+        #= include("device/execution.jl") =#
+        #= include("device/pointer.jl") =#
+        #= include("device/array.jl") =#
+        #= include("device/cuda.jl") =#
         include("device/wmma.jl")
 
-        include("examples.jl")
+        #= include("examples.jl") =#
     end
 end
 
