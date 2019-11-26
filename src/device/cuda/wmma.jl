@@ -131,7 +131,7 @@ for mat in ["d"],
     func_name = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("@llvm", "nvvm", "wmma", "store", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
+    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "store", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
 
     # Determine types for this (matrix, elem_type) combination
     sz = get_frag_sz(mat, elem_type)
@@ -152,12 +152,14 @@ for mat in ["d"],
     ret void
     ")
 
-    @eval $func_name(dst_addr, data, stride) = Base.llvmcall($ir,
-        Nothing,
-        Tuple{Int64, NTuple{$sz, $jl_ty}, Int32},
-        convert(Int64, dst_addr),
-        convert(NTuple{$sz, $jl_ty}, data),
-        convert(Int32, stride))
+    ccall_name = "extern $llvm_intr"
+    base_type = elem_type == "f16" ? Float16 : Float32
+
+    if sz == 4
+        @eval $func_name(dst_addr, data, stride) = ccall($ccall_name, llvmcall, Nothing, (Ref{$base_type}, $jl_ty, $jl_ty, $jl_ty, $jl_ty, Int32), dst_addr, data[1], data[2], data[3], data[4], stride)
+    elseif sz == 8
+        @eval $func_name(dst_addr, data, stride) = ccall($ccall_name, llvmcall, Nothing, (Ref{$base_type}, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, Int32), dst_addr, data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], stride)
+    end
 
     @eval export $func_name
 end

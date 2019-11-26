@@ -20,7 +20,7 @@
             @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["a", "b", "c"],
                 layout in ["row", "col"],
                 shape in ["m16n16k16"],
-                addr_space in ["", "_global" #=, "_shared" =#],
+                addr_space in ["", "_global"],
                 stride in ["stride"],
                 elem_type in ["f16", "f32"]
 
@@ -65,54 +65,54 @@
             end
         end
 
-        #= @testset "llvm_wmma_store" begin =#
-        #=     @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["d"], =#
-        #=         layout in ["row", "col"], =#
-        #=         shape in ["m16n16k16"], =#
-        #=         addr_space in ["", "_global", "_shared"], =#
-        #=         stride in ["stride"], =#
-        #=         elem_type in ["f16", "f32"] =#
+        @testset "llvm_wmma_store" begin
+            @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["d"],
+                layout in ["row", "col"],
+                shape in ["m16n16k16"],
+                addr_space in ["", "_global"],
+                stride in ["stride"],
+                elem_type in ["f16", "f32"]
 
-        #=         # Type-dependent variables =#
-        #=         array_ty = elem_type == "f16" ? Float16 : Float32 =#
-        #=         data = elem_type == "f16" ? =#
-        #=             ( =#
-        #=                (VecElement{Float16}(42), VecElement{Float16}(42)), =#
-        #=                (VecElement{Float16}(42), VecElement{Float16}(42)), =#
-        #=                (VecElement{Float16}(42), VecElement{Float16}(42)), =#
-        #=                (VecElement{Float16}(42), VecElement{Float16}(42)) =#
-        #=             ) : (42, 42, 42, 42, 42, 42, 42, 42) =#
+                # Type-dependent variables
+                array_ty = elem_type == "f16" ? Float16 : Float32
+                data = elem_type == "f16" ?
+                    (
+                       (VecElement{Float16}(42), VecElement{Float16}(42)),
+                       (VecElement{Float16}(42), VecElement{Float16}(42)),
+                       (VecElement{Float16}(42), VecElement{Float16}(42)),
+                       (VecElement{Float16}(42), VecElement{Float16}(42))
+                    ) : (42, 42, 42, 42, 42, 42, 42, 42)
 
-        #=         # Get the function name =#
-        #=         func = Symbol("llvm_wmma_store_$(mat)_$(layout)_$(shape)$(addr_space)_stride_$(elem_type)") =#
+                # Get the function name
+                func = Symbol("llvm_wmma_store_$(mat)_$(layout)_$(shape)$(addr_space)_stride_$(elem_type)")
 
-        #=         # Address-space dependent variables =#
-        #=         do_shared_test = (addr_space == "_shared") =#
+                # Address-space dependent variables
+                do_shared_test = (addr_space == "_shared")
 
-        #=         output     = Array{array_ty}(undef, (16, 16)) =#
-        #=         output_dev = CuArray(output) =#
+                output     = Array{array_ty}(undef, (16, 16))
+                output_dev = CuArray(output)
 
 
-        #=         @eval function kernel(output_dev) =#
-        #=             if $do_shared_test =#
-        #=                 shared_mem = @cuStaticSharedMem($array_ty, 256) =#
-        #=                 ptr = generic_to_shared(pointer(shared_mem)) =#
-        #=                 $func(ptr, $data, 16) =#
+                @eval function kernel(output_dev)
+                    if $do_shared_test
+                        shared_mem = @cuStaticSharedMem($array_ty, 256)
+                        ptr = generic_to_shared(pointer(shared_mem))
+                        $func(ptr, $data, 16)
 
-        #=                 for i = 1:256 =#
-        #=                     @inbounds output_dev[i] = shared_mem[i] =#
-        #=                 end =#
-        #=             else =#
-        #=                 $func(pointer(output_dev), $data, 16) =#
-        #=             end =#
+                        for i = 1:256
+                            @inbounds output_dev[i] = shared_mem[i]
+                        end
+                    else
+                        $func(pointer(output_dev), $data, 16)
+                    end
 
-        #=             return =#
-        #=         end =#
+                    return
+                end
 
-        #=         @cuda threads=32 kernel(output_dev) =#
-        #=         @test all(Array(output_dev) .== 42.0) =#
-        #=     end =#
-        #= end =#
+                @cuda threads=32 kernel(output_dev)
+                @test all(Array(output_dev) .== 42.0)
+            end
+        end
 
         #= @testset "llvm_wmma_mma" begin =#
         #=     @testset "$(a_layout)_$(b_layout)_$(shape)_$(d_elem_type)_$(c_elem_type)" for a_layout in ["row", "col"], =#
