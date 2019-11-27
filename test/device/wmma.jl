@@ -2,13 +2,13 @@
 
 ################################################################################
 
-@eval generic_to_shared(ptr) = Base.llvmcall(
+@eval generic_to_shared(ptr::CUDAnative.DevicePtr{T, AS.Shared}) where T = Base.llvmcall(
     "
     %ptr.generic = inttoptr i64 %0 to i8*
     %ptr.shared = addrspacecast i8* %ptr.generic to i8 addrspace(3)*
     %ret = ptrtoint i8 addrspace(3)* %ptr.shared to i64
     ret i64 %ret",
-    Int64,
+    CUDAnative.DevicePtr{T, AS.Shared},
     Tuple{Int64},
     convert(Int64, ptr))
 
@@ -20,7 +20,7 @@
             @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["a", "b", "c"],
                 layout in ["row", "col"],
                 shape in ["m16n16k16"],
-                addr_space in ["", "_global"],
+                addr_space in ["", "_global", "_shared"],
                 stride in ["stride"],
                 elem_type in ["f16", "f32"]
 
@@ -69,7 +69,7 @@
             @testset "$(mat)_$(layout)_$(shape)_$(addr_space)_$(elem_type)" for mat in ["d"],
                 layout in ["row", "col"],
                 shape in ["m16n16k16"],
-                addr_space in ["", "_global"],
+                addr_space in ["", "_global", "_shared"],
                 stride in ["stride"],
                 elem_type in ["f16", "f32"]
 
