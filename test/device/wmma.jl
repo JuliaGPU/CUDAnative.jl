@@ -2,15 +2,15 @@
 
 ################################################################################
 
-@eval generic_to_shared(ptr::CUDAnative.DevicePtr{T, AS.Shared}) where T = Base.llvmcall(
-    "
-    %ptr.generic = inttoptr i64 %0 to i8*
-    %ptr.shared = addrspacecast i8* %ptr.generic to i8 addrspace(3)*
-    %ret = ptrtoint i8 addrspace(3)* %ptr.shared to i64
-    ret i64 %ret",
-    CUDAnative.DevicePtr{T, AS.Shared},
-    Tuple{Int64},
-    convert(Int64, ptr))
+#= @eval generic_to_shared(ptr::CUDAnative.DevicePtr{T, AS.Shared}) where T = Base.llvmcall( =#
+#=     " =#
+#=     %ptr.generic = inttoptr i64 %0 to i8* =#
+#=     %ptr.shared = addrspacecast i8* %ptr.generic to i8 addrspace(3)* =#
+#=     %ret = ptrtoint i8 addrspace(3)* %ptr.shared to i64 =#
+#=     ret i64 %ret", =#
+#=     CUDAnative.DevicePtr{T, AS.Shared}, =#
+#=     Tuple{Int64}, =#
+#=     convert(Int64, ptr)) =#
 
 ################################################################################
 
@@ -49,7 +49,7 @@
                         input_shared = @cuStaticSharedMem($array_ty, 256)
                         fill!(input_shared, 42)
 
-                        data = $func(generic_to_shared(input_shared.ptr), 16)
+                        data = $func(addrspacecast(input_shared.ptr), 16)
 
                         result_dev[1] = all(val -> val == $expected, data)
                     else
@@ -96,7 +96,7 @@
                 @eval function kernel(output_dev)
                     if $do_shared_test
                         shared_mem = @cuStaticSharedMem($array_ty, 256)
-                        ptr = generic_to_shared(pointer(shared_mem))
+                        ptr = addrspacecast(pointer(shared_mem))
                         $func(ptr, $data, 16)
 
                         for i = 1:256
