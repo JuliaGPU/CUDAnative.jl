@@ -36,7 +36,11 @@ function join_nonempty(args...)
 end
 
 # Returns (Julia array type, Julia fragment type, fragment size)
-get_frag_info(matrix, ptx_el_type) = (map_ptx_to_jl_array[ptx_el_type], map_ptx_to_jl_frag[elem_type], map_frag_sizes["$matrix.$ptx_el_type"])
+get_frag_info(matrix, ptx_el_type) = (
+        map_ptx_to_jl_array[ptx_el_type],
+        map_ptx_to_jl_frag[elem_type],
+        map_frag_sizes["$matrix.$ptx_el_type"]
+        )
 
 ################################################################################
 # LOW LEVEL API
