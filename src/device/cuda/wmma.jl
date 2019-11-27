@@ -154,12 +154,10 @@ for mat in ["d"],
 
     ccall_name = "extern $llvm_intr"
     base_type = elem_type == "f16" ? Float16 : Float32
+    frag_types = ntuple(i -> jl_ty, sz)
+    frag_vars = ntuple(i -> :(data[$i]), sz)
 
-    if sz == 4
-        @eval $func_name(dst_addr, data, stride) = ccall($ccall_name, llvmcall, Nothing, (Ref{$base_type}, $jl_ty, $jl_ty, $jl_ty, $jl_ty, Int32), dst_addr, data[1], data[2], data[3], data[4], stride)
-    elseif sz == 8
-        @eval $func_name(dst_addr, data, stride) = ccall($ccall_name, llvmcall, Nothing, (Ref{$base_type}, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, $jl_ty, Int32), dst_addr, data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8], stride)
-    end
+    @eval $func_name(dst_addr, data, stride) = ccall($ccall_name, llvmcall, Nothing, (Ref{$base_type}, $(frag_types...), Int32), dst_addr, $(frag_vars...), stride)
 
     @eval export $func_name
 end
