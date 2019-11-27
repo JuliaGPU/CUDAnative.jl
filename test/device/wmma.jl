@@ -114,56 +114,56 @@
             end
         end
 
-        #= @testset "llvm_wmma_mma" begin =#
-        #=     @testset "$(a_layout)_$(b_layout)_$(shape)_$(d_elem_type)_$(c_elem_type)" for a_layout in ["row", "col"], =#
-        #=         b_layout in ["row", "col"], =#
-        #=         shape in ["m16n16k16"], =#
-        #=         d_elem_type in ["f16", "f32"], =#
-        #=         c_elem_type in ["f16", "f32"] =#
+        @testset "llvm_wmma_mma" begin
+            @testset "$(a_layout)_$(b_layout)_$(shape)_$(d_elem_type)_$(c_elem_type)" for a_layout in ["row", "col"],
+                b_layout in ["row", "col"],
+                shape in ["m16n16k16"],
+                d_elem_type in ["f16", "f32"],
+                c_elem_type in ["f16", "f32"]
 
-        #=         # Type-dependent variables =#
-        #=         d_ty = d_elem_type == "f16" ? Float16 : Float32 =#
-        #=         c_ty = c_elem_type == "f16" ? Float16 : Float32 =#
+                # Type-dependent variables
+                d_ty = d_elem_type == "f16" ? Float16 : Float32
+                c_ty = c_elem_type == "f16" ? Float16 : Float32
 
-        #=         # Get the function names =#
-        #=         lda_func = getfield(Main, Symbol("llvm_wmma_load_a_$(a_layout)_m16n16k16_stride_f16")) =#
-        #=         ldb_func = getfield(Main, Symbol("llvm_wmma_load_b_$(b_layout)_m16n16k16_stride_f16")) =#
-        #=         ldc_func = getfield(Main, Symbol("llvm_wmma_load_c_col_m16n16k16_stride_$(c_elem_type)")) =#
-        #=         mma_func = getfield(Main, Symbol("llvm_wmma_mma_$(a_layout)_$(b_layout)_m16n16k16_$(d_elem_type)_$(c_elem_type)")) =#
-        #=         std_func = getfield(Main, Symbol("llvm_wmma_store_d_col_m16n16k16_stride_$(d_elem_type)")) =#
+                # Get the function names
+                lda_func = getfield(Main, Symbol("llvm_wmma_load_a_$(a_layout)_m16n16k16_stride_f16"))
+                ldb_func = getfield(Main, Symbol("llvm_wmma_load_b_$(b_layout)_m16n16k16_stride_f16"))
+                ldc_func = getfield(Main, Symbol("llvm_wmma_load_c_col_m16n16k16_stride_$(c_elem_type)"))
+                mma_func = getfield(Main, Symbol("llvm_wmma_mma_$(a_layout)_$(b_layout)_m16n16k16_$(d_elem_type)_$(c_elem_type)"))
+                std_func = getfield(Main, Symbol("llvm_wmma_store_d_col_m16n16k16_stride_$(d_elem_type)"))
 
-        #=         # Generate input matrices =#
-        #=         a     = rand(Float16, (16, 16)) =#
-        #=         a_dev = CuArray(a) =#
-        #=         b     = rand(Float16, (16, 16)) =#
-        #=         b_dev = CuArray(b) =#
-        #=         c     = rand(c_ty, (16, 16)) =#
-        #=         c_dev = CuArray(c) =#
+                # Generate input matrices
+                a     = rand(Float16, (16, 16))
+                a_dev = CuArray(a)
+                b     = rand(Float16, (16, 16))
+                b_dev = CuArray(b)
+                c     = rand(c_ty, (16, 16))
+                c_dev = CuArray(c)
 
-        #=         # Reserve space for result =#
-        #=         d     = Array{d_ty}(undef, (16, 16)) =#
-        #=         d_dev = CuArray(d) =#
+                # Reserve space for result
+                d     = Array{d_ty}(undef, (16, 16))
+                d_dev = CuArray(d)
 
-        #=         # Matrix MAC kernel (D = A * B + C) =#
-        #=         function kernel(a_dev, b_dev, c_dev, d_dev) =#
-        #=             a_frag = lda_func(pointer(a_dev), 16) =#
-        #=             b_frag = ldb_func(pointer(b_dev), 16) =#
-        #=             c_frag = ldc_func(pointer(c_dev), 16) =#
+                # Matrix MAC kernel (D = A * B + C)
+                function kernel(a_dev, b_dev, c_dev, d_dev)
+                    a_frag = lda_func(pointer(a_dev), 16)
+                    b_frag = ldb_func(pointer(b_dev), 16)
+                    c_frag = ldc_func(pointer(c_dev), 16)
 
-        #=             d_frag = mma_func(a_frag, b_frag, c_frag) =#
+                    d_frag = mma_func(a_frag, b_frag, c_frag)
 
-        #=             std_func(pointer(d_dev), d_frag, 16) =#
-        #=             return =#
-        #=         end =#
+                    std_func(pointer(d_dev), d_frag, 16)
+                    return
+                end
 
-        #=         @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev) =#
+                @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
 
-        #=         new_a = (a_layout == "col" ? a : transpose(a)) =#
-        #=         new_b = (b_layout == "col" ? b : transpose(b)) =#
+                new_a = (a_layout == "col" ? a : transpose(a))
+                new_b = (b_layout == "col" ? b : transpose(b))
 
-        #=         @test all(isapprox.(new_a * new_b + c, Array(d_dev); rtol=sqrt(eps(Float16)))) =#
-        #=     end =#
-        #= end =#
+                @test all(isapprox.(new_a * new_b + c, Array(d_dev); rtol=sqrt(eps(Float16))))
+            end
+        end
     end
 
 ################################################################################

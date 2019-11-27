@@ -178,7 +178,7 @@ for a_layout in ["col", "row"],
     func_name = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("@llvm", "nvvm", "wmma", "mma", "sync", a_layout, b_layout, shape, d_elem_type, c_elem_type, ".")
+    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "mma", "sync", a_layout, b_layout, shape, d_elem_type, c_elem_type, ".")
 
     # Determine types for the (matrix, elem_type) combinations for matrix A
     a_sz = get_frag_sz("a", a_elem_type)
@@ -234,12 +234,25 @@ for a_layout in ["col", "row"],
     ret [$d_sz x $d_lc_ty] %d.aggr.$(d_sz-1)
     ")
 
-    @eval $func_name(a, b, c) = Base.llvmcall($ir,
-        NTuple{$d_sz, $d_jl_ty},
-        Tuple{NTuple{$a_sz, $a_jl_ty}, NTuple{$b_sz, $b_jl_ty}, NTuple{$c_sz, $c_jl_ty}},
-        convert(NTuple{$a_sz, $a_jl_ty}, a),
-        convert(NTuple{$b_sz, $b_jl_ty}, b),
-        convert(NTuple{$c_sz, $c_jl_ty}, c))
+    #= @eval $func_name(a, b, c) = Base.llvmcall($ir, =#
+    #=     NTuple{$d_sz, $d_jl_ty}, =#
+    #=     Tuple{NTuple{$a_sz, $a_jl_ty}, NTuple{$b_sz, $b_jl_ty}, NTuple{$c_sz, $c_jl_ty}}, =#
+    #=     convert(NTuple{$a_sz, $a_jl_ty}, a), =#
+    #=     convert(NTuple{$b_sz, $b_jl_ty}, b), =#
+    #=     convert(NTuple{$c_sz, $c_jl_ty}, c)) =#
+
+    ccall_name = "extern $llvm_intr"
+
+    a_types = ntuple(i -> a_jl_ty, a_sz)
+    b_types = ntuple(i -> b_jl_ty, b_sz)
+    c_types = ntuple(i -> c_jl_ty, c_sz)
+
+    a_vars = ntuple(i -> :(a[$i]), a_sz)
+    b_vars = ntuple(i -> :(b[$i]), b_sz)
+    c_vars = ntuple(i -> :(c[$i]), c_sz)
+
+
+    @eval $func_name(a, b, c) = ccall($ccall_name, llvmcall, NTuple{$d_sz, $d_jl_ty}, ($(a_types...), $(b_types...), $(c_types...)), $(a_vars...), $(b_vars...), $(c_vars...))
 
     @eval export $func_name
 end
