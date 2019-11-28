@@ -323,10 +323,7 @@ for mat in ["a", "b", "c"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get fragment size
-    frag_sz = get_frag_sz(mat, elem_type)
-
-    # Get Julia element type
-    julia_type = get_jl_ty(mat, elem_type)
+    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -335,18 +332,15 @@ for mat in ["a", "b", "c"],
     layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
     layout_frag_ty = (mat == "c") ? wmma_unspecified : layout_ty
 
-    # Get pointer type
-    ptr_ty = (elem_type == "f32") ? Float32 : Float16
-
     # Get address space type
     as_ty = get_address_space(addr_space)
 
-    @eval function $func_name(addr::DevicePtr{$ptr_ty, $as_ty},
+    @eval function $func_name(addr::DevicePtr{$arr_ty, $as_ty},
                               stride::Number,
                               layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
         x = $wrapper(addr, stride)
-        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use}(x)
+        return wmma_fragment{16, 16, 16, $sz, $frag_ty, $layout_frag_ty, $matrix_use}(x)
     end
 end
 
@@ -387,34 +381,23 @@ for a_layout in ["col", "row"],
     # Name of the Julia wrapper
     wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
-    # Information about a
-    a_frag_sz = get_frag_sz("a", a_elem_type)
-    a_julia_type = get_jl_ty("a", a_elem_type)
+    # Get types
+    a_arr_ty, a_frag_ty, a_sz = get_frag_info("a", a_elem_type)
     a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
 
-    # Information about b
-    b_frag_sz = get_frag_sz("b", b_elem_type)
-    b_julia_type = get_jl_ty("b", b_elem_type)
+    b_arr_ty, b_frag_ty, b_sz = get_frag_info("b", b_elem_type)
     b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
 
-    # Information about c
-    c_frag_sz = get_frag_sz("c", c_elem_type)
-    c_julia_type = get_jl_ty("c", c_elem_type)
+    c_arr_ty, c_frag_ty, c_sz = get_frag_info("c", c_elem_type)
 
-    # Information about d
-    d_frag_sz = get_frag_sz("d", d_elem_type)
-    d_julia_type = get_jl_ty("d", d_elem_type)
+    d_arr_ty, d_frag_ty, d_sz = get_frag_info("d", d_elem_type)
 
-    # We need some way to select if we want d to be 16 or 32-bit floating point
-    # during dispatch.
-    dispatch_ty = (d_elem_type == "f16") ? Float16 : Float32
-
-    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_frag_sz, $a_julia_type, $a_layout_ty, wmma_matrix_a},
-                            b::wmma_fragment{16, 16, 16, $b_frag_sz, $b_julia_type, $b_layout_ty, wmma_matrix_b},
-                            c::wmma_fragment{16, 16, 16, $c_frag_sz, $c_julia_type, wmma_unspecified, wmma_accumulator},
-                            conf::Type{wmma_config{16, 16, 16, $dispatch_ty}})
+    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_frag_ty, $a_layout_ty, wmma_matrix_a},
+                            b::wmma_fragment{16, 16, 16, $b_sz, $b_frag_ty, $b_layout_ty, wmma_matrix_b},
+                            c::wmma_fragment{16, 16, 16, $c_sz, $c_frag_ty, wmma_unspecified, wmma_accumulator},
+                            conf::Type{wmma_config{16, 16, 16, $d_arr_ty}})
         x = $wrapper(a.x, b.x, c.x)
-        return wmma_fragment{16, 16, 16, $d_frag_sz, $d_julia_type, wmma_unspecified, wmma_accumulator}(x)
+        return wmma_fragment{16, 16, 16, $d_sz, $d_frag_ty, wmma_unspecified, wmma_accumulator}(x)
     end
 end
 
@@ -459,11 +442,8 @@ for mat in ["d"],
     # Name of the Julia wrapper
     wrapper = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
-    # Get fragment size
-    frag_sz = get_frag_sz(mat, elem_type)
-
-    # Get Julia element type
-    julia_type = get_jl_ty(mat, elem_type)
+    # Get types
+    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -472,14 +452,11 @@ for mat in ["d"],
     layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
     layout_frag_ty = wmma_unspecified
 
-    # Get pointer type
-    ptr_ty = (elem_type == "f32") ? Float32 : Float16
-
     # Get address space type
     as_ty = get_address_space(addr_space)
 
-    @eval function $func_name(addr::DevicePtr{$ptr_ty, $as_ty},
-                              d::wmma_fragment{16, 16, 16, $frag_sz, $julia_type, $layout_frag_ty, $matrix_use},
+    @eval function $func_name(addr::DevicePtr{$arr_ty, $as_ty},
+                              d::wmma_fragment{16, 16, 16, $sz, $frag_ty, $layout_frag_ty, $matrix_use},
                               stride::Number,
                               layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
@@ -515,26 +492,20 @@ for mat in ["c"],
     # Name of the Julia function
     func_name = Symbol("wmma_fill_$mat")
 
-    # Get fragment size
-    frag_sz = get_frag_sz(mat, elem_type)
-
-    # Get Julia type
-    julia_type = get_jl_ty(mat, elem_type)
-
-    # Value type
-    val_type = (elem_type == "f16") ? Float16 : Float32
+    # Get fragment types and size
+    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
 
     # Returned tuple
     if elem_type == "f16"
-        tuple = :(ntuple(i -> ntuple(j -> VecElement{Float16}(value), 2), $frag_sz))
+        tuple = :(ntuple(i -> ntuple(j -> VecElement{Float16}(value), 2), $sz))
     else
-        tuple = :(ntuple(i -> value, $frag_sz))
+        tuple = :(ntuple(i -> value, $sz))
     end
 
-    @eval function $func_name(value::$val_type,
+    @eval function $func_name(value::$arr_ty,
                               config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type}
 
         x = $tuple
-        return wmma_fragment{16, 16, 16, $frag_sz, $julia_type, wmma_unspecified, wmma_accumulator}(x)
+        return wmma_fragment{16, 16, 16, $sz, $frag_ty, wmma_unspecified, wmma_accumulator}(x)
     end
 end
