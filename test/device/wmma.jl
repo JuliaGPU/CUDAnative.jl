@@ -147,4 +147,61 @@
 
 ################################################################################
 
+    @testset "CUDA C-style API" begin
+
+        @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [wmma_col_major, wmma_row_major],
+            b_layout in [wmma_col_major, wmma_row_major],
+            c_layout in [wmma_col_major, wmma_row_major],
+            d_layout in [wmma_col_major, wmma_row_major],
+            c_type in [Float16, Float32],
+            d_type in [Float16, Float32],
+            do_mac in [true, false]
+
+            a     = rand(Float16, (16, 16))
+            b     = rand(Float16, (16, 16))
+            c     = rand(c_type, (16, 16))
+            d     = Array{d_type}(undef, (16, 16))
+
+            a_dev = CuArray(a)
+            b_dev = CuArray(b)
+            c_dev = CuArray(c)
+            d_dev = CuArray(d)
+
+            @eval function kernel(a_dev, b_dev, c_dev, d_dev)
+                conf = wmma_config{16, 16, 16, $d_type}
+
+                a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
+                b_frag = wmma_load_b(pointer(b_dev), 16, $b_layout, conf)
+
+                if $do_mac
+                    c_frag = wmma_load_c(pointer(c_dev), 16, $c_layout, conf)
+                else
+                    c_frag = wmma_fill_c($c_type(0), conf)
+                end
+
+                d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
+
+                wmma_store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
+
+                return
+            end
+
+            @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
+            d = Array(d_dev)
+
+            new_a = (a_layout == wmma_col_major) ? a : transpose(a)
+            new_b = (b_layout == wmma_col_major) ? b : transpose(b)
+            new_c = (c_layout == wmma_col_major) ? c : transpose(c)
+            new_d = (d_layout == wmma_col_major) ? d : transpose(d)
+
+            if do_mac
+                @test all(isapprox.(new_a * new_b + new_c, new_d; rtol=sqrt(eps(Float16))))
+            else
+                @test all(isapprox.(new_a * new_b, new_d; rtol=sqrt(eps(Float16))))
+            end
+        end
+
+    end
+
+################################################################################
 end

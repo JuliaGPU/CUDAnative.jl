@@ -135,4 +135,92 @@ end
 
 ## CUDA C-like API
 
-NYI
+The main difference between the CUDA C-like API and the lower level wrappers, is that the former enforces several constraints when working with WMMA.
+For example, it ensures that the ``A`` fragment argument to the MMA instruction was obtained by a `load_a` call, and not by a `load_b` or `load_c`.
+Additionally, it makes sure that the data type and storage layout of the load/store operations and the MMA operation match.
+
+The CUDA C-like API heavily uses Julia's dispatch mechanism.
+As such, the method names are much shorter than the LLVM intrinsic wrappers, as most information is baked into the type of the arguments rather than the method name.
+
+
+Note that, in CUDA C++, the fragment is responsible for both the storage of intermediate results and the WMMA configuration.
+All CUDA C++ WMMA calls are function templates that take the resultant fragment as a by-reference argument.
+As a result, the type of this argument can be used during overload resolution to select the correct WMMA instruction to call.
+
+In contrast, the API in Julia separates the WMMA storage ([`wmma_fragment`](@ref)) and configuration ([`wmma_config`](@ref)).
+Instead of taking the resultant fragment by reference, the Julia functions just return it.
+This makes the dataflow clearer, but it also means that the type of that fragment cannot be used for selection of the correct WMMA instruction.
+Thus, there is still a limited amount of information that cannot be inferred from the argument types, but must nonetheless match for all WMMA operations, such as the overall shape of the MMA.
+This is accomplished by a separate "WMMA configuration" (see [`wmma_config`](@ref)) that you create once, and then give as an argument to all intrinsics.
+
+### Fragment
+```@docs
+CUDAnative.wmma_fragment_layout
+CUDAnative.wmma_row_major
+CUDAnative.wmma_col_major
+CUDAnative.wmma_unspecified
+CUDAnative.wmma_fragment
+```
+
+### WMMA configuration
+```@docs
+CUDAnative.wmma_config
+```
+
+### Load matrix
+```@docs
+CUDAnative.wmma_load_a
+CUDAnative.wmma_load_b
+CUDAnative.wmma_load_c
+```
+
+### Perform multiply-accumulate
+```@docs
+CUDAnative.wmma_mma
+```
+
+### Store matrix
+```@docs
+CUDAnative.wmma_store_d
+```
+
+### Fill fragment
+```@docs
+CUDAnative.wmma_fill_c
+```
+
+### Example
+
+```julia
+using CUDAnative
+using CuArrays
+using Test
+
+a     = rand(Float16, (16, 16))
+b     = rand(Float16, (16, 16))
+c     = rand(Float32, (16, 16))
+
+a_dev = CuArray(a)
+b_dev = CuArray(b)
+c_dev = CuArray(c)
+d_dev = similar(c_dev)
+
+function kernel(a_dev, b_dev, c_dev, d_dev)
+    conf = wmma_config{16, 16, 16, Float32}
+
+    a_frag = wmma_load_a(pointer(a_dev), 16, wmma_col_major, conf)
+    b_frag = wmma_load_b(pointer(b_dev), 16, wmma_col_major, conf)
+    c_frag = wmma_load_c(pointer(c_dev), 16, wmma_col_major, conf)
+
+    d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
+
+    wmma_store_d(pointer(d_dev), d_frag, 16, wmma_col_major, conf)
+
+    return
+end
+
+@cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
+d = Array(d_dev)
+
+@test a * b + c ≈ d rtol=0.01
+```
