@@ -23,6 +23,12 @@ map_frag_sizes = Dict(
                       "d.f16" => 4,
                       "d.f32" => 8
                      )
+# Maps PTX AS to Int
+map_ptx_as_to_int = Dict(
+                         "" => 0,
+                         "shared" => 3,
+                         "global" => 1
+                        )
 
 ################################################################################
 # HELPER FUNCTIONS
@@ -41,6 +47,8 @@ get_frag_info(matrix, ptx_el_type) = (
         map_ptx_to_jl_frag[ptx_el_type],
         map_frag_sizes["$matrix.$ptx_el_type"]
         )
+
+get_addrspace_info(addr_space) = map_ptx_as_to_int[addr_space]
 
 ################################################################################
 # LOW LEVEL API
@@ -64,11 +72,13 @@ for mat in ["a", "b", "c"],
         continue
     end
 
+    addr_space_int = get_addrspace_info(addr_space)
+
     # Name of the Julia wrapper function
     func_name = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "load", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
+    llvm_intr = "llvm.nvvm.wmma.$shape.load.$mat.$layout.stride.$elem_type.p$(addr_space_int)i8"
 
     # Determine types + size for this (matrix, elem_type) combination
     arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
@@ -92,11 +102,13 @@ for mat in ["d"],
 
     # TODO: Non-stride versions?
 
+    addr_space_int = get_addrspace_info(addr_space)
+
     # Name of the Julia wrapper function
     func_name = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "store", mat, "sync", layout, shape, addr_space, stride, elem_type, ".")
+    llvm_intr = "llvm.nvvm.wmma.$shape.store.$mat.$layout.stride.$elem_type.p$(addr_space_int)i8"
 
     # Determine types + size for this (matrix, elem_type) combination
     arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
@@ -125,7 +137,7 @@ for a_layout in ["col", "row"],
     func_name = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
     # Name of the LLVM intrinsic
-    llvm_intr = join_nonempty("llvm", "nvvm", "wmma", "mma", "sync", a_layout, b_layout, shape, d_elem_type, c_elem_type, ".")
+    llvm_intr = "llvm.nvvm.wmma.$shape.mma.$a_layout.$b_layout.$d_elem_type.$c_elem_type"
 
     # Determine types + size for the (matrix, elem_type) combinations for matrix A, B, C and D
     a_arr_ty, a_frag_ty, a_sz = get_frag_info("a", a_elem_type)
