@@ -276,32 +276,3 @@ end
 @inline unsafe_cached_load(p::DevicePtr{T,AS.Global}, i::Integer=1, args...) where {T} =
     recurse_pointer_invocation(unsafe_cached_load, p+sizeof(T)*Int(i-one(i)),
                                CachedLoadPointers, 1, args...)
-
-export addrspacecast
-
-@generated function addrspacecast(p::DevicePtr{T, AS}) where {T, AS}
-    # types
-    eltyp = convert(LLVMType, T)
-    T_ptr = convert(LLVMType, DevicePtr{T, AS})
-
-    T_actual_ptr = LLVM.PointerType(eltyp)
-    T_actual_ptr_as = LLVM.PointerType(eltyp, convert(Int, AS))
-
-    # create function
-    param_types = [T_ptr]
-    llvm_f, _ = create_function(T_ptr, param_types)
-
-    # generate LLVM IR
-    Builder(JuliaContext()) do builder
-        entry = BasicBlock(llvm_f, "entry", JuliaContext())
-        position!(builder, entry)
-
-        ptr = inttoptr!(builder, parameters(llvm_f)[1], T_actual_ptr)
-        ptr_with_as = addrspacecast!(builder, ptr, T_actual_ptr_as)
-        ret = ptrtoint!(builder, ptr_with_as, LLVM.Int64Type(JuliaContext()))
-
-        ret!(builder, ret)
-    end
-
-    call_function(llvm_f, DevicePtr{T, AS}, Tuple{DevicePtr{T, AS}}, :((p,)))
-end
