@@ -19,7 +19,7 @@
 
                 # Type-dependent variables
                 array_ty = elem_type == "f16" ? Float16 : Float32
-                expected = elem_type == "f16" ? (VecElement{Float16}(42), VecElement{Float16}(42)) : Float32(42)
+                expected = elem_type == "f16" ? ntuple(i -> VecElement{Float16}(42), 2) : Float32(42)
 
                 # Address-space dependent variables
                 do_shared_test = (addr_space == "_shared")
@@ -37,13 +37,12 @@
                         input_shared = @cuStaticSharedMem($array_ty, 256)
                         fill!(input_shared, 42)
 
-                        data = $func(input_shared.ptr, 16)
-
-                        result_dev[1] = all(val -> val == $expected, data)
+                        data = $func(pointer(input_shared), 16)
                     else
                         data = $func(pointer(input_dev), 16)
-                        result_dev[1] = all(val -> val == $expected, data)
                     end
+
+                    result_dev[1] = all(val -> val == $expected, data)
 
                     return
                 end
@@ -63,13 +62,7 @@
 
                 # Type-dependent variables
                 array_ty = elem_type == "f16" ? Float16 : Float32
-                data = elem_type == "f16" ?
-                    (
-                       (VecElement{Float16}(42), VecElement{Float16}(42)),
-                       (VecElement{Float16}(42), VecElement{Float16}(42)),
-                       (VecElement{Float16}(42), VecElement{Float16}(42)),
-                       (VecElement{Float16}(42), VecElement{Float16}(42))
-                    ) : (42, 42, 42, 42, 42, 42, 42, 42)
+                data = elem_type == "f16" ? ntuple(i -> ntuple(j -> VecElement{Float16}(42), 2), 4) : ntuple(i -> 42, 8)
 
                 # Get the function name
                 func = Symbol("llvm_wmma_store_$(mat)_$(layout)_$(shape)$(addr_space)_stride_$(elem_type)")
@@ -80,12 +73,10 @@
                 output     = Array{array_ty}(undef, (16, 16))
                 output_dev = CuArray(output)
 
-
                 @eval function kernel(output_dev)
                     if $do_shared_test
                         shared_mem = @cuStaticSharedMem($array_ty, 256)
-                        ptr = pointer(shared_mem)
-                        $func(ptr, $data, 16)
+                        $func(pointer(shared_mem), $data, 16)
 
                         for i = 1:256
                             @inbounds output_dev[i] = shared_mem[i]
