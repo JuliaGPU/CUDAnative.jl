@@ -23,6 +23,7 @@ map_frag_sizes = Dict(
                       "d.f16" => 4,
                       "d.f32" => 8
                      )
+
 # Maps PTX AS to Int
 map_ptx_as_to_int = Dict(
                          "" => 0,
