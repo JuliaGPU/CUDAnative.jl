@@ -161,6 +161,43 @@ for a_layout in ["col", "row"],
 end
 
 ################################################################################
+# FLATTENING/UNFLATTENING LOGIC
+################################################################################
+
+# Base case (Float16, Float32, ...)
+flatten_recurse(typ, e) = [:($e)]
+unflatten_recurse(typ, e, idx) = :($e[$idx]), idx + 1
+
+# VecElements
+flatten_recurse(typ::Type{VecElement{T}}, e) where T = [:($e.value)]
+unflatten_recurse(typ::Type{VecElement{T}}, e, idx) where T = :(VecElement{$T}($e[$idx])), idx + 1
+
+# NTuples
+function flatten_recurse(typ::Type{NTuple{N, T}}, e) where {N, T}
+    ret = Expr[]
+
+    for (i, eltyp) in enumerate(typ.types)
+        append!(ret, flatten_recurse(eltyp, :($e[$i])))
+    end
+
+    return ret
+end
+
+function unflatten_recurse(typ::Type{NTuple{N, T}}, e, idx) where {N, T}
+    ret = Expr(:tuple)
+
+    for (i, eltyp) in enumerate(typ.types)
+        arg, idx = unflatten_recurse(eltyp, e, idx)
+        push!(ret.args, arg)
+    end
+
+    return ret, idx
+end
+
+@generated flatten(x::typ) where typ = Expr(:tuple, flatten_recurse(typ, :x)...)
+@generated unflatten(::Type{typ}, x) where typ = unflatten_recurse(typ, :x, 1)[1]
+
+################################################################################
 # HIGH LEVEL (CUDA-STYLE API)
 ################################################################################
 
@@ -271,11 +308,11 @@ map_address_space_to_ty = Dict(
 
 # Maps matrix & PTX types to number of elements (size after flattening)
 map_num_elements = Dict(
-                      "a.f16" => 8,
-                      "b.f16" => 8,
-                      "c.f16" => 4,
+                      "a.f16" => 16,
+                      "b.f16" => 16,
+                      "c.f16" => 8,
                       "c.f32" => 8,
-                      "d.f16" => 4,
+                      "d.f16" => 8,
                       "d.f32" => 8
                        )
 
@@ -289,6 +326,7 @@ get_address_space(as) = map_address_space_to_ty[as]
 get_hl_frag_info(matrix, ptx_el_type) = (
         map_ptx_to_jl_array[ptx_el_type],
         map_ptx_to_jl_frag[ptx_el_type],
+        map_frag_sizes["$matrix.$ptx_el_type"],
         map_num_elements["$matrix.$ptx_el_type"]
         )
 
@@ -340,7 +378,7 @@ for mat in ["a", "b", "c"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get fragment size
-    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
+    arr_ty, _, _, sz = get_hl_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -356,8 +394,8 @@ for mat in ["a", "b", "c"],
                               stride::Number,
                               layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
-        x = $wrapper(addr, stride)
-        return wmma_fragment{16, 16, 16, $sz, $frag_ty, $layout_frag_ty, $matrix_use}(x)
+        x = flatten($wrapper(addr, stride))
+        return wmma_fragment{16, 16, 16, $sz, $arr_ty, $layout_frag_ty, $matrix_use}(x)
     end
 end
 
@@ -399,22 +437,25 @@ for a_layout in ["col", "row"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
     # Get types
-    a_arr_ty, a_frag_ty, a_sz = get_hl_frag_info("a", a_elem_type)
+    a_arr_ty, a_frag_ty, a_sz_unfl, a_sz = get_hl_frag_info("a", a_elem_type)
     a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
 
-    b_arr_ty, b_frag_ty, b_sz = get_hl_frag_info("b", b_elem_type)
+    b_arr_ty, b_frag_ty, b_sz_unfl, b_sz = get_hl_frag_info("b", b_elem_type)
     b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
 
-    c_arr_ty, c_frag_ty, c_sz = get_hl_frag_info("c", c_elem_type)
+    c_arr_ty, c_frag_ty, c_sz_unfl, c_sz = get_hl_frag_info("c", c_elem_type)
 
-    d_arr_ty, d_frag_ty, d_sz = get_hl_frag_info("d", d_elem_type)
+    d_arr_ty, _, _, d_sz = get_hl_frag_info("d", d_elem_type)
 
-    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_frag_ty, $a_layout_ty, wmma_matrix_a},
-                            b::wmma_fragment{16, 16, 16, $b_sz, $b_frag_ty, $b_layout_ty, wmma_matrix_b},
-                            c::wmma_fragment{16, 16, 16, $c_sz, $c_frag_ty, wmma_unspecified, wmma_accumulator},
+    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_arr_ty, $a_layout_ty, wmma_matrix_a},
+                            b::wmma_fragment{16, 16, 16, $b_sz, $b_arr_ty, $b_layout_ty, wmma_matrix_b},
+                            c::wmma_fragment{16, 16, 16, $c_sz, $c_arr_ty, wmma_unspecified, wmma_accumulator},
                             conf::Type{wmma_config{16, 16, 16, $d_arr_ty}})
-        x = $wrapper(a.x, b.x, c.x)
-        return wmma_fragment{16, 16, 16, $d_sz, $d_frag_ty, wmma_unspecified, wmma_accumulator}(x)
+        a_unfl = unflatten(NTuple{$a_sz_unfl, $a_frag_ty}, a.x)
+        b_unfl = unflatten(NTuple{$b_sz_unfl, $b_frag_ty}, b.x)
+        c_unfl = unflatten(NTuple{$c_sz_unfl, $c_frag_ty}, c.x)
+        x = flatten($wrapper(a_unfl, b_unfl, c_unfl))
+        return wmma_fragment{16, 16, 16, $d_sz, $d_arr_ty, wmma_unspecified, wmma_accumulator}(x)
     end
 end
 
@@ -460,7 +501,7 @@ for mat in ["d"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get types
-    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
+    arr_ty, frag_ty, sz_unfl, sz = get_hl_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -473,11 +514,12 @@ for mat in ["d"],
     as_ty = get_address_space(addr_space)
 
     @eval function $func_name(addr::DevicePtr{$arr_ty, $as_ty},
-                              d::wmma_fragment{16, 16, 16, $sz, $frag_ty, $layout_frag_ty, $matrix_use},
+                              d::wmma_fragment{16, 16, 16, $sz, $arr_ty, $layout_frag_ty, $matrix_use},
                               stride::Number,
                               layout::Type{$layout_ty},
                               config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
-        $wrapper(addr, d.x, stride)
+        d_unfl = unflatten(NTuple{$sz_unfl, $frag_ty}, d.x)
+        $wrapper(addr, d_unfl, stride)
         return nothing
     end
 
@@ -510,19 +552,12 @@ for mat in ["c"],
     func_name = Symbol("wmma_fill_$mat")
 
     # Get fragment types and size
-    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
-
-    # Returned tuple
-    if elem_type == "f16"
-        tuple = :(ntuple(i -> ntuple(j -> VecElement{Float16}(value), 2), $sz))
-    else
-        tuple = :(ntuple(i -> value, $sz))
-    end
+    arr_ty, _, _, sz = get_hl_frag_info(mat, elem_type)
 
     @eval function $func_name(value::$arr_ty,
                               config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type}
 
-        x = $tuple
-        return wmma_fragment{16, 16, 16, $sz, $frag_ty, wmma_unspecified, wmma_accumulator}(x)
+        x = ntuple(i -> value, $sz)
+        return wmma_fragment{16, 16, 16, $sz, $arr_ty, wmma_unspecified, wmma_accumulator}(x)
     end
 end
