@@ -167,7 +167,10 @@
             c_dev = CuArray(c)
             d_dev = CuArray(d)
 
-            @eval function kernel(a_dev, b_dev, c_dev, d_dev)
+            alpha = rand()
+            beta  = rand()
+
+            @eval function kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
                 conf = wmma_config{16, 16, 16, $d_type}
 
                 a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
@@ -179,6 +182,10 @@
                     c_frag = wmma_fill_c($c_type(0), conf)
                 end
 
+                # TODO: Make this less awkward by implementing Base.broadcast for wmma_fragment
+                a_frag = typeof(a_frag)(alpha .* a_frag.x)
+                c_frag = typeof(c_frag)(beta .* c_frag.x)
+
                 d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
 
                 wmma_store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
@@ -186,7 +193,7 @@
                 return
             end
 
-            @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
+            @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
             d = Array(d_dev)
 
             new_a = (a_layout == wmma_col_major) ? a : transpose(a)
@@ -195,9 +202,9 @@
             new_d = (d_layout == wmma_col_major) ? d : transpose(d)
 
             if do_mac
-                @test all(isapprox.(new_a * new_b + new_c, new_d; rtol=sqrt(eps(Float16))))
+                @test all(isapprox.(alpha * new_a * new_b + beta * new_c, new_d; rtol=sqrt(eps(Float16))))
             else
-                @test all(isapprox.(new_a * new_b, new_d; rtol=sqrt(eps(Float16))))
+                @test all(isapprox.(alpha * new_a * new_b, new_d; rtol=sqrt(eps(Float16))))
             end
         end
 
