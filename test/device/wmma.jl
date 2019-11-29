@@ -182,7 +182,7 @@
                     c_frag = wmma_fill_c($c_type(0), conf)
                 end
 
-                # TODO: Make this less awkward by implementing Base.broadcast for wmma_fragment
+                # TODO: Make this less awkward, see https://docs.julialang.org/en/v1/manual/interfaces/#man-interfaces-broadcasting-1
                 a_frag = typeof(a_frag)(alpha .* a_frag.x)
                 c_frag = typeof(c_frag)(beta .* c_frag.x)
 
