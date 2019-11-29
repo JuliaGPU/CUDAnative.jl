@@ -269,12 +269,28 @@ map_address_space_to_ty = Dict(
                                "global" => AS.Global
                               )
 
+# Maps matrix & PTX types to number of elements (size after flattening)
+map_num_elements = Dict(
+                      "a.f16" => 8,
+                      "b.f16" => 8,
+                      "c.f16" => 4,
+                      "c.f32" => 8,
+                      "d.f16" => 4,
+                      "d.f32" => 8
+                       )
+
 # ----------------
 # Helper functions
 # ----------------
 
 get_matrix_use(mat) = map_matrix_to_use[mat]
 get_address_space(as) = map_address_space_to_ty[as]
+
+get_hl_frag_info(matrix, ptx_el_type) = (
+        map_ptx_to_jl_array[ptx_el_type],
+        map_ptx_to_jl_frag[ptx_el_type],
+        map_num_elements["$matrix.$ptx_el_type"]
+        )
 
 # ---------
 # WMMA load
@@ -324,7 +340,7 @@ for mat in ["a", "b", "c"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get fragment size
-    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
+    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -383,15 +399,15 @@ for a_layout in ["col", "row"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
     # Get types
-    a_arr_ty, a_frag_ty, a_sz = get_frag_info("a", a_elem_type)
+    a_arr_ty, a_frag_ty, a_sz = get_hl_frag_info("a", a_elem_type)
     a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
 
-    b_arr_ty, b_frag_ty, b_sz = get_frag_info("b", b_elem_type)
+    b_arr_ty, b_frag_ty, b_sz = get_hl_frag_info("b", b_elem_type)
     b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
 
-    c_arr_ty, c_frag_ty, c_sz = get_frag_info("c", c_elem_type)
+    c_arr_ty, c_frag_ty, c_sz = get_hl_frag_info("c", c_elem_type)
 
-    d_arr_ty, d_frag_ty, d_sz = get_frag_info("d", d_elem_type)
+    d_arr_ty, d_frag_ty, d_sz = get_hl_frag_info("d", d_elem_type)
 
     @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_frag_ty, $a_layout_ty, wmma_matrix_a},
                             b::wmma_fragment{16, 16, 16, $b_sz, $b_frag_ty, $b_layout_ty, wmma_matrix_b},
@@ -444,7 +460,7 @@ for mat in ["d"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
 
     # Get types
-    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
+    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
 
     # Get matrix use type
     matrix_use = get_matrix_use(mat)
@@ -494,7 +510,7 @@ for mat in ["c"],
     func_name = Symbol("wmma_fill_$mat")
 
     # Get fragment types and size
-    arr_ty, frag_ty, sz = get_frag_info(mat, elem_type)
+    arr_ty, frag_ty, sz = get_hl_frag_info(mat, elem_type)
 
     # Returned tuple
     if elem_type == "f16"
