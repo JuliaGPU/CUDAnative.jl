@@ -599,19 +599,17 @@ This operation is useful if you want to implement a matrix multiplication (and t
 """
 wmma_fill_c
 
-for mat in ["c"],
-    elem_type in ["f16", "f32"]
+@generated function wmma_fill_c(value::T,
+                                config::Type{wmma_config{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
 
-    # Name of the Julia function
-    func_name = Symbol("wmma_fill_$mat")
+    # We can't use closures in @generated functions, so we'll have to do it this way instead of
+    # ntuple(i -> val, $num_els).
+    num_els, _, _ = get_hl_frag_info("c", T)
 
-    # Get fragment types and size
-    arr_ty, _, _, sz = get_hl_frag_info_old(mat, elem_type)
+    args = [:value for i=1:num_els]
+    expr = :(tuple($(args...)))
 
-    @eval function $func_name(value::$arr_ty,
-                              config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type}
-
-        x = ntuple(i -> value, $sz)
-        return wmma_fragment{16, 16, 16, $sz, $arr_ty, wmma_unspecified, wmma_accumulator}(x)
+    return quote
+        return wmma_fragment{$M, $N, $K, $num_els, $T, wmma_unspecified, wmma_accumulator}($expr)
     end
 end
