@@ -293,12 +293,6 @@ struct wmma_config{M, N, K, d_type} end
 # Constants
 # ---------
 
-map_matrix_to_use = Dict(
-                      "a" => wmma_matrix_a,
-                      "b" => wmma_matrix_b,
-                      "c" => wmma_accumulator,
-                      "d" => wmma_accumulator
-                        )
 
 map_address_space_to_ty = Dict(
                                "" => AS.Generic,
@@ -316,6 +310,43 @@ map_num_elements = Dict(
                       "d.f32" => 8
                        )
 
+
+
+
+
+# Maps Julia array types to string
+map_jl_array_to_str = Dict(val => key for (key, val) in map_ptx_to_jl_array)
+
+# Maps CUDAnative.AS types to string
+map_as_ty_to_str = Dict(
+                        AS.Generic => "",
+                        AS.Shared => "shared",
+                        AS.Global => "global"
+                       )
+
+# Maps layout types to string
+map_layout_ty_to_str = Dict(
+                            wmma_row_major => "row",
+                            wmma_col_major => "col"
+                           )
+
+# Maps matrix & type to number of elements (size after flattening)
+map_num_elems = Dict(
+                     ("a", Float16) => 16,
+                     ("b", Float16) => 16,
+                     ("c", Float16) => 8,
+                     ("c", Float32) => 8,
+                     ("d", Float16) => 8,
+                     ("d", Float32) => 8
+                    )
+
+# Maps matrix to its use
+map_matrix_to_use = Dict(
+                      "a" => wmma_matrix_a,
+                      "b" => wmma_matrix_b,
+                      "c" => wmma_accumulator,
+                      "d" => wmma_accumulator
+                        )
 # ----------------
 # Helper functions
 # ----------------
@@ -329,6 +360,50 @@ get_hl_frag_info(matrix, ptx_el_type) = (
         map_frag_sizes["$matrix.$ptx_el_type"],
         map_num_elements["$matrix.$ptx_el_type"]
         )
+
+function get_hl_ptr_info(T, AS)
+    arr_str, as_str = nothing, nothing
+
+    try
+        arr_str = map_jl_array_to_str[T]
+    catch
+        error("Invalid element type for WMMA: $T")
+    end
+
+    try
+        as_str = map_as_ty_to_str[AS]
+    catch
+        error("Invalid address space for WMMA: $AS")
+    end
+
+    return (arr_str, as_str)
+end
+
+function get_hl_layout(L)
+    try
+        return map_layout_ty_to_str[L]
+    catch
+        error("Invalid layout for WMMA: $L")
+    end
+end
+
+function get_hl_shape(M, N, K)
+    if (M, N, K) != (16, 16, 16)
+        error("Invalid shape for WMMA: (M, N, K) = ($M, $N, $K)")
+    end
+
+    return "m$(M)n$(N)k$(K)"
+end
+
+function get_hl_num_elems(matrix, T)
+    try
+        return map_num_elems[(matrix, T)]
+    catch
+        error("Invalid type $T for matrix $matrix")
+    end
+end
+
+get_hl_mat_use(mat) = map_matrix_to_use[mat]
 
 # ---------
 # WMMA load
@@ -358,44 +433,28 @@ See also: [`wmma_fragment`](@ref), [`wmma_fragment_layout`](@ref), [`wmma_config
 """
 wmma_load_a, wmma_load_b, wmma_load_c
 
-for mat in ["a", "b", "c"],
-    layout in ["col", "row"],
-    shape in ["m16n16k16"],
-    addr_space in ["", "shared", "global"],
-    stride in ["stride"],
-    elem_type in ["f16", "f32"]
-
-
-    # Float32 is only supported for C
-    if (elem_type == "f32") && (mat != "c")
-        continue
-    end
-
-    # Name of Julia function
+for mat in ["a", "b", "c"]
     func_name = Symbol("wmma_load_$mat")
 
-    # Name of the Julia wrapper
-    wrapper = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
+    @eval @generated function $func_name(addr::DevicePtr{T, AS},
+                                         stride::Number,
+                                         layout::Type{L},
+                                         config::Type{wmma_config{M, N, K, D_TYPE}}) where {T, AS, L, M, N, K, D_TYPE}
 
-    # Get fragment size
-    arr_ty, _, _, sz = get_hl_frag_info(mat, elem_type)
+        arr_str, as_str = get_hl_ptr_info(T, AS)
+        layout          = get_hl_layout(L)
+        shape           = get_hl_shape(M, N, K)
+        num_els         = get_hl_num_elems($mat, T)
+        U               = get_hl_mat_use($mat)
+        L_ret           = ($mat == "c") ? wmma_unspecified : L
 
-    # Get matrix use type
-    matrix_use = get_matrix_use(mat)
+        # Name of the Julia wrapper
+        wrapper = Symbol(join_nonempty("llvm", "wmma", "load", $mat, layout, shape, as_str, "stride", arr_str, "_"))
 
-    # Get layout type
-    layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
-    layout_frag_ty = (mat == "c") ? wmma_unspecified : layout_ty
-
-    # Get address space type
-    as_ty = get_address_space(addr_space)
-
-    @eval function $func_name(addr::DevicePtr{$arr_ty, $as_ty},
-                              stride::Number,
-                              layout::Type{$layout_ty},
-                              config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
-        x = flatten($wrapper(addr, stride))
-        return wmma_fragment{16, 16, 16, $sz, $arr_ty, $layout_frag_ty, $matrix_use}(x)
+        return quote
+            x = flatten($wrapper(addr, stride))
+            return wmma_fragment{$M, $N, $K, $num_els, $T, $L_ret, $U}(x)
+        end
     end
 end
 
