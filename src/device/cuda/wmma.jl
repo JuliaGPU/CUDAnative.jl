@@ -363,22 +363,12 @@ get_hl_frag_info_old(matrix, ptx_el_type) = (
         map_num_elements["$matrix.$ptx_el_type"]
         )
 
-function get_hl_ptr_info(T, AS)
-    arr_str, as_str = nothing, nothing
-
+function get_hl_as_info(AS)
     try
-        arr_str = map_jl_array_to_str[T]
-    catch
-        error("Invalid element type for WMMA: $T")
-    end
-
-    try
-        as_str = map_as_ty_to_str[AS]
+        return map_as_ty_to_str[AS]
     catch
         error("Invalid address space for WMMA: $AS")
     end
-
-    return (arr_str, as_str)
 end
 
 function get_hl_layout(L)
@@ -411,7 +401,8 @@ function get_hl_frag_info(matrix, T)
     try
         return (map_num_elems[(matrix, T)],
                 map_frag_sizes["$matrix.$ptx_ty"],
-                map_ptx_to_jl_frag[ptx_ty])
+                map_ptx_to_jl_frag[ptx_ty],
+                ptx_ty)
     catch
         error("Invalid type $T for matrix $matrix")
     end
@@ -453,12 +444,12 @@ for mat in ["a", "b", "c"]
                                          layout::Type{L},
                                          config::Type{wmma_config{M, N, K, D_TYPE}}) where {T, AS, L, M, N, K, D_TYPE}
 
-        arr_str, as_str = get_hl_ptr_info(T, AS)
-        layout          = get_hl_layout(L)
-        shape           = get_hl_shape(M, N, K)
-        num_els, _, _   = get_hl_frag_info($mat, T)
-        U               = get_hl_mat_use($mat)
-        L_ret           = ($mat == "c") ? wmma_unspecified : L
+        as_str                 = get_hl_as_info(AS)
+        layout                 = get_hl_layout(L)
+        shape                  = get_hl_shape(M, N, K)
+        num_els, _, _, arr_str = get_hl_frag_info($mat, T)
+        U                      = get_hl_mat_use($mat)
+        L_ret                  = ($mat == "c") ? wmma_unspecified : L
 
         # Name of the Julia wrapper
         wrapper = Symbol(join_nonempty("llvm", "wmma", "load", $mat, layout, shape, as_str, "stride", arr_str, "_"))
@@ -496,39 +487,66 @@ Perform the matrix multiply-accumulate operation ``D = A \\cdot B + C``.
 """
 wmma_mma
 
-for a_layout in ["col", "row"],
-    b_layout in ["col", "row"],
-    shape in ["m16n16k16"],
-    d_elem_type in ["f16", "f32"],
-    c_elem_type in ["f16", "f32"],
-    b_elem_type in ["f16"],
-    a_elem_type in ["f16"]
+@generated function wmma_mma(a::wmma_fragment{M, N, K, A_SZ, A_T, A_L, wmma_matrix_a},
+                             b::wmma_fragment{M, N, K, B_SZ, B_T, B_L, wmma_matrix_b},
+                             c::wmma_fragment{M, N, K, C_SZ, C_T, wmma_unspecified, wmma_accumulator},
+                             config::Type{wmma_config{M, N, K, D_T}}) where {M, N, K, A_SZ, A_T, A_L, B_SZ, B_T, B_L, C_SZ, C_T, D_T}
+
+    _, a_frag_sz, a_frag_ty, _         = get_hl_frag_info("a", A_T)
+    _, b_frag_sz, b_frag_ty, _         = get_hl_frag_info("b", B_T)
+    _, c_frag_sz, c_frag_ty, c_arr_str = get_hl_frag_info("c", C_T)
+    d_num_els, _, _, d_arr_str         = get_hl_frag_info("d", D_T)
+
+    a_layout = get_hl_layout(A_L)
+    b_layout = get_hl_layout(B_L)
+    shape = get_hl_shape(M, N, K)
 
     # Name of the Julia wrapper
-    wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
+    wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_arr_str, c_arr_str, "_"))
 
-    # Get types
-    a_arr_ty, a_frag_ty, a_sz_unfl, a_sz = get_hl_frag_info_old("a", a_elem_type)
-    a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
+    return quote
+        a_unfl = unflatten(NTuple{$a_frag_sz, $a_frag_ty}, a.x)
+        b_unfl = unflatten(NTuple{$b_frag_sz, $b_frag_ty}, b.x)
+        c_unfl = unflatten(NTuple{$c_frag_sz, $c_frag_ty}, c.x)
 
-    b_arr_ty, b_frag_ty, b_sz_unfl, b_sz = get_hl_frag_info_old("b", b_elem_type)
-    b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
-
-    c_arr_ty, c_frag_ty, c_sz_unfl, c_sz = get_hl_frag_info_old("c", c_elem_type)
-
-    d_arr_ty, _, _, d_sz = get_hl_frag_info_old("d", d_elem_type)
-
-    @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_arr_ty, $a_layout_ty, wmma_matrix_a},
-                            b::wmma_fragment{16, 16, 16, $b_sz, $b_arr_ty, $b_layout_ty, wmma_matrix_b},
-                            c::wmma_fragment{16, 16, 16, $c_sz, $c_arr_ty, wmma_unspecified, wmma_accumulator},
-                            conf::Type{wmma_config{16, 16, 16, $d_arr_ty}})
-        a_unfl = unflatten(NTuple{$a_sz_unfl, $a_frag_ty}, a.x)
-        b_unfl = unflatten(NTuple{$b_sz_unfl, $b_frag_ty}, b.x)
-        c_unfl = unflatten(NTuple{$c_sz_unfl, $c_frag_ty}, c.x)
         x = flatten($wrapper(a_unfl, b_unfl, c_unfl))
-        return wmma_fragment{16, 16, 16, $d_sz, $d_arr_ty, wmma_unspecified, wmma_accumulator}(x)
+        return wmma_fragment{$M, $N, $K, $d_num_els, $D_T, wmma_unspecified, wmma_accumulator}(x)
     end
 end
+
+#= for a_layout in ["col", "row"], =#
+#=     b_layout in ["col", "row"], =#
+#=     shape in ["m16n16k16"], =#
+#=     d_elem_type in ["f16", "f32"], =#
+#=     c_elem_type in ["f16", "f32"], =#
+#=     b_elem_type in ["f16"], =#
+#=     a_elem_type in ["f16"] =#
+
+#=     # Name of the Julia wrapper =#
+#=     wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_")) =#
+
+#=     # Get types =#
+#=     a_arr_ty, a_frag_ty, a_sz_unfl, a_sz = get_hl_frag_info_old("a", a_elem_type) =#
+#=     a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major =#
+
+#=     b_arr_ty, b_frag_ty, b_sz_unfl, b_sz = get_hl_frag_info_old("b", b_elem_type) =#
+#=     b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major =#
+
+#=     c_arr_ty, c_frag_ty, c_sz_unfl, c_sz = get_hl_frag_info_old("c", c_elem_type) =#
+
+#=     d_arr_ty, _, _, d_sz = get_hl_frag_info_old("d", d_elem_type) =#
+
+#=     @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_arr_ty, $a_layout_ty, wmma_matrix_a}, =#
+#=                             b::wmma_fragment{16, 16, 16, $b_sz, $b_arr_ty, $b_layout_ty, wmma_matrix_b}, =#
+#=                             c::wmma_fragment{16, 16, 16, $c_sz, $c_arr_ty, wmma_unspecified, wmma_accumulator}, =#
+#=                             conf::Type{wmma_config{16, 16, 16, $d_arr_ty}}) =#
+#=         a_unfl = unflatten(NTuple{$a_sz_unfl, $a_frag_ty}, a.x) =#
+#=         b_unfl = unflatten(NTuple{$b_sz_unfl, $b_frag_ty}, b.x) =#
+#=         c_unfl = unflatten(NTuple{$c_sz_unfl, $c_frag_ty}, c.x) =#
+#=         x = flatten($wrapper(a_unfl, b_unfl, c_unfl)) =#
+#=         return wmma_fragment{16, 16, 16, $d_sz, $d_arr_ty, wmma_unspecified, wmma_accumulator}(x) =#
+#=     end =#
+#= end =#
 
 
 # ----------
@@ -564,10 +582,10 @@ wmma_store_d
                                  layout::Type{L},
                                  config::Type{wmma_config{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
 
-    arr_str, as_str           = get_hl_ptr_info(T, AS)
-    layout                    = get_hl_layout(L)
-    shape                     = get_hl_shape(M, N, K)
-    num_els, frag_sz, frag_ty = get_hl_frag_info("d", T)
+    as_str                             = get_hl_as_info(AS)
+    layout                             = get_hl_layout(L)
+    shape                              = get_hl_shape(M, N, K)
+    num_els, frag_sz, frag_ty, arr_str = get_hl_frag_info("d", T)
 
     # Name of the Julia wrapper
     wrapper = Symbol(join_nonempty("llvm", "wmma", "store", "d", layout, shape, as_str, "stride", arr_str, "_"))
@@ -603,7 +621,7 @@ wmma_fill_c
                                 config::Type{wmma_config{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
 
     # We can't use closures in @generated functions, so we'll have to do it this way instead of
-    # ntuple(i -> val, $num_els).
+    # ntuple(i -> val, $num_els)
     num_els, _, _ = get_hl_frag_info("c", T)
 
     args = [:value for i=1:num_els]
@@ -613,3 +631,20 @@ wmma_fill_c
         return wmma_fragment{$M, $N, $K, $num_els, $T, wmma_unspecified, wmma_accumulator}($expr)
     end
 end
+
+#= for mat in ["c"], =#
+#=     elem_type in ["f16", "f32"] =#
+
+#=     # Name of the Julia function =#
+#=     func_name = Symbol("wmma_fill_$mat") =#
+
+#=     # Get fragment types and size =#
+#=     arr_ty, _, _, sz = get_hl_frag_info_old(mat, elem_type) =#
+
+#=     @eval function $func_name(value::$arr_ty, =#
+#=                               config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type} =#
+
+#=         x = ntuple(i -> value, $sz) =#
+#=         return wmma_fragment{16, 16, 16, $sz, $arr_ty, wmma_unspecified, wmma_accumulator}(x) =#
+#=     end =#
+#= end =#
