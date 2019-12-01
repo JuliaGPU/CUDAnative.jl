@@ -314,6 +314,8 @@ map_num_elements = Dict(
 
 
 
+
+
 # Maps Julia array types to string
 map_jl_array_to_str = Dict(val => key for (key, val) in map_ptx_to_jl_array)
 
@@ -354,7 +356,7 @@ map_matrix_to_use = Dict(
 get_matrix_use(mat) = map_matrix_to_use[mat]
 get_address_space(as) = map_address_space_to_ty[as]
 
-get_hl_frag_info(matrix, ptx_el_type) = (
+get_hl_frag_info_old(matrix, ptx_el_type) = (
         map_ptx_to_jl_array[ptx_el_type],
         map_ptx_to_jl_frag[ptx_el_type],
         map_frag_sizes["$matrix.$ptx_el_type"],
@@ -395,15 +397,25 @@ function get_hl_shape(M, N, K)
     return "m$(M)n$(N)k$(K)"
 end
 
-function get_hl_num_elems(matrix, T)
+get_hl_mat_use(mat) = map_matrix_to_use[mat]
+
+function get_hl_frag_info(matrix, T)
+    ptx_ty = nothing
+
     try
-        return map_num_elems[(matrix, T)]
+        ptx_ty = map_jl_array_to_str[T]
+    catch
+        error("Invalid element type for WMMA: $T")
+    end
+
+    try
+        return (map_num_elems[(matrix, T)],
+                map_frag_sizes["$matrix.$ptx_ty"],
+                map_ptx_to_jl_frag[ptx_ty])
     catch
         error("Invalid type $T for matrix $matrix")
     end
 end
-
-get_hl_mat_use(mat) = map_matrix_to_use[mat]
 
 # ---------
 # WMMA load
@@ -444,7 +456,7 @@ for mat in ["a", "b", "c"]
         arr_str, as_str = get_hl_ptr_info(T, AS)
         layout          = get_hl_layout(L)
         shape           = get_hl_shape(M, N, K)
-        num_els         = get_hl_num_elems($mat, T)
+        num_els, _, _   = get_hl_frag_info($mat, T)
         U               = get_hl_mat_use($mat)
         L_ret           = ($mat == "c") ? wmma_unspecified : L
 
@@ -496,15 +508,15 @@ for a_layout in ["col", "row"],
     wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
 
     # Get types
-    a_arr_ty, a_frag_ty, a_sz_unfl, a_sz = get_hl_frag_info("a", a_elem_type)
+    a_arr_ty, a_frag_ty, a_sz_unfl, a_sz = get_hl_frag_info_old("a", a_elem_type)
     a_layout_ty = (a_layout == "col") ? wmma_col_major : wmma_row_major
 
-    b_arr_ty, b_frag_ty, b_sz_unfl, b_sz = get_hl_frag_info("b", b_elem_type)
+    b_arr_ty, b_frag_ty, b_sz_unfl, b_sz = get_hl_frag_info_old("b", b_elem_type)
     b_layout_ty = (b_layout == "col") ? wmma_col_major : wmma_row_major
 
-    c_arr_ty, c_frag_ty, c_sz_unfl, c_sz = get_hl_frag_info("c", c_elem_type)
+    c_arr_ty, c_frag_ty, c_sz_unfl, c_sz = get_hl_frag_info_old("c", c_elem_type)
 
-    d_arr_ty, _, _, d_sz = get_hl_frag_info("d", d_elem_type)
+    d_arr_ty, _, _, d_sz = get_hl_frag_info_old("d", d_elem_type)
 
     @eval function wmma_mma(a::wmma_fragment{16, 16, 16, $a_sz, $a_arr_ty, $a_layout_ty, wmma_matrix_a},
                             b::wmma_fragment{16, 16, 16, $b_sz, $b_arr_ty, $b_layout_ty, wmma_matrix_b},
@@ -546,42 +558,25 @@ See also: [`wmma_fragment`](@ref), [`wmma_fragment_layout`](@ref), [`wmma_config
 """
 wmma_store_d
 
-for mat in ["d"],
-    layout in ["col", "row"],
-    shape in ["m16n16k16"],
-    addr_space in ["", "shared", "global"],
-    stride in ["stride"],
-    elem_type in ["f16", "f32"]
+@generated function wmma_store_d(addr::DevicePtr{T, AS},
+                                 d::wmma_fragment{M, N, K, D_SZ, T, wmma_unspecified, wmma_accumulator},
+                                 stride::Number,
+                                 layout::Type{L},
+                                 config::Type{wmma_config{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
 
-    # Name of Julia function
-    func_name = Symbol("wmma_store_$mat")
+    arr_str, as_str           = get_hl_ptr_info(T, AS)
+    layout                    = get_hl_layout(L)
+    shape                     = get_hl_shape(M, N, K)
+    num_els, frag_sz, frag_ty = get_hl_frag_info("d", T)
 
     # Name of the Julia wrapper
-    wrapper = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
+    wrapper = Symbol(join_nonempty("llvm", "wmma", "store", "d", layout, shape, as_str, "stride", arr_str, "_"))
 
-    # Get types
-    arr_ty, frag_ty, sz_unfl, sz = get_hl_frag_info(mat, elem_type)
-
-    # Get matrix use type
-    matrix_use = get_matrix_use(mat)
-
-    # Get layout type
-    layout_ty = (layout == "col") ? wmma_col_major : wmma_row_major
-    layout_frag_ty = wmma_unspecified
-
-    # Get address space type
-    as_ty = get_address_space(addr_space)
-
-    @eval function $func_name(addr::DevicePtr{$arr_ty, $as_ty},
-                              d::wmma_fragment{16, 16, 16, $sz, $arr_ty, $layout_frag_ty, $matrix_use},
-                              stride::Number,
-                              layout::Type{$layout_ty},
-                              config::Type{wmma_config{16, 16, 16, d_type}}) where d_type
-        d_unfl = unflatten(NTuple{$sz_unfl, $frag_ty}, d.x)
+    return quote
+        d_unfl = unflatten(NTuple{$frag_sz, $frag_ty}, d.x)
         $wrapper(addr, d_unfl, stride)
         return nothing
     end
-
 end
 
 
@@ -611,7 +606,7 @@ for mat in ["c"],
     func_name = Symbol("wmma_fill_$mat")
 
     # Get fragment types and size
-    arr_ty, _, _, sz = get_hl_frag_info(mat, elem_type)
+    arr_ty, _, _, sz = get_hl_frag_info_old(mat, elem_type)
 
     @eval function $func_name(value::$arr_ty,
                               config::Type{wmma_config{M, N, K, d_type}}) where {M, N, K, d_type}
