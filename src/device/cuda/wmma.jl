@@ -565,3 +565,52 @@ wmma_fill_c
         return wmma_fragment{$M, $N, $K, $num_els, $T, wmma_unspecified, wmma_accumulator}($expr)
     end
 end
+
+################################################################################
+# BROADCASTING OVER WMMA_FRAGMENTS
+################################################################################
+
+# Based on broadcasting implementation of Tuples in
+# https://github.com/JuliaLang/julia/blob/master/base/broadcast.jl
+
+
+# Custom broadcast style for wmma_fragments
+struct wmma_fragment_broadcast_style <: Broadcast.BroadcastStyle end
+
+# Use this broadcasting style for wmma_fragments
+Base.BroadcastStyle(::Type{<:wmma_fragment}) = wmma_fragment_broadcast_style()
+
+# Broadcast style precedence rules
+# If we broadcast a fragment with a scalar, we want the wmma_fragment style to take precedence
+Base.BroadcastStyle(s::wmma_fragment_broadcast_style, t::Broadcast.DefaultArrayStyle{0}) = s
+
+# We don't want to convert fragments before broadcasting
+Base.broadcastable(frag::wmma_fragment) = frag
+
+# Needed for broadcast machinery
+Base.axes(frag::wmma_fragment) = axes(frag.x)
+
+# Helper functions to get element at specified index
+@inline get_index(x, i) = x                           # scalar
+@inline get_index(frag::wmma_fragment, i) = frag.x[i] # wmma_fragment
+
+# Helper functions to get first fragment in broadcast call
+@inline find_first_fragment(args::Tuple) = find_first_fragment(args[1], Base.tail(args))
+@inline find_first_fragment(a::wmma_fragment, tail) = a
+@inline find_first_fragment(::Any, tail) = find_first_fragment(tail)
+
+# Custom broadcast implementation that returns a wmma_fragment
+@inline function Base.copy(bc::Broadcast.Broadcasted{wmma_fragment_broadcast_style})
+    dim = Broadcast.combine_axes(bc.args...)
+
+    if length(dim) != 1
+        throw(DimensionMismatch("WMMA fragment broadcast only supports one dimension!"))
+    end
+
+    N = length(dim[1])
+
+    tuple = ntuple(i -> bc.f(map(arg -> get_index(arg, i), bc.args)...), Val(N))
+
+    frag_ty = typeof(find_first_fragment(bc.args))
+    return frag_ty(tuple)
+end

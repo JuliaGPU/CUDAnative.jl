@@ -184,9 +184,8 @@ if VERSION >= v"1.4.0-DEV.534"
                     c_frag = wmma_fill_c($c_type(0), conf)
                 end
 
-                # TODO: Make this less awkward, see https://docs.julialang.org/en/v1/manual/interfaces/#man-interfaces-broadcasting-1
-                a_frag = typeof(a_frag)(alpha .* a_frag.x)
-                c_frag = typeof(c_frag)(beta .* c_frag.x)
+                a_frag = alpha .* a_frag
+                c_frag = beta .* c_frag
 
                 d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
 
