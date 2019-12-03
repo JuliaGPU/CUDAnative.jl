@@ -169,8 +169,8 @@ if VERSION >= v"1.4.0-DEV.534"
             c_dev = CuArray(c)
             d_dev = CuArray(d)
 
-            alpha = rand()
-            beta  = rand()
+            alpha = rand(Float16)
+            beta  = rand(c_type)
 
             @eval function kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
                 conf = wmma_config{16, 16, 16, $d_type}
