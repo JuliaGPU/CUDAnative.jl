@@ -173,6 +173,14 @@ if VERSION >= v"1.4.0-DEV.534"
 
 ################################################################################
 
+    @testset "Broadcasting over fragments: size=$sz, type=$ty" for sz = [1, 2, 5],
+            ty = [Float16, Float32]
+            @test ty(5) .* wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(i), sz)) == wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(5 * i), sz))
+            @test ty(5) .+ wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(i), sz)) == wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(5 + i), sz))
+    end
+
+################################################################################
+
     @testset "CUDA C-style API" begin
 
         @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [wmma_col_major, wmma_row_major],
