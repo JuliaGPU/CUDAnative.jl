@@ -151,23 +151,23 @@ if VERSION >= v"1.4.0-DEV.534"
 
     @testset "Flattening/unflattening" begin
         @testset "Flattening" begin
-            @test flatten(5)                                                                  == (5,)
-            @test flatten(5.0)                                                                == (5.0,)
-            @test flatten(VecElement{Float16}(5))                                             == (Float16(5),)
-            @test flatten(ntuple(i -> i, 8))                                                  == ntuple(i -> i, 8)
-            @test flatten(ntuple(i -> VecElement{Float16}(i), 8))                             == ntuple(i -> Float16(i), 8)
-            @test flatten(ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8))                      == ntuple(i -> i, 2 * 8)
-            @test flatten(ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)) == ntuple(i -> Float16(i), 2 * 8)
+            @test CUDAnative.flatten(5)                                                                  == (5,)
+            @test CUDAnative.flatten(5.0)                                                                == (5.0,)
+            @test CUDAnative.flatten(VecElement{Float16}(5))                                             == (Float16(5),)
+            @test CUDAnative.flatten(ntuple(i -> i, 8))                                                  == ntuple(i -> i, 8)
+            @test CUDAnative.flatten(ntuple(i -> VecElement{Float16}(i), 8))                             == ntuple(i -> Float16(i), 8)
+            @test CUDAnative.flatten(ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8))                      == ntuple(i -> i, 2 * 8)
+            @test CUDAnative.flatten(ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)) == ntuple(i -> Float16(i), 2 * 8)
         end
 
         @testset "Unflattening" begin
-            @test unflatten(Int64, (5,))                                                               == 5
-            @test unflatten(Float64, (5.0,))                                                           == 5.0
-            @test unflatten(VecElement{Float16}, (Float16(5),))                                        == VecElement{Float16}(5)
-            @test unflatten(NTuple{8, Int64}, ntuple(i -> i, 8))                                       == ntuple(i -> i, 8)
-            @test unflatten(NTuple{8, VecElement{Float16}}, ntuple(i -> Float16(i), 8))                == ntuple(i -> VecElement{Float16}(i), 8)
-            @test unflatten(NTuple{8, NTuple{2, Int64}}, ntuple(i -> i, 2 * 8))                        == ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8)
-            @test unflatten(NTuple{8, NTuple{2, VecElement{Float16}}}, ntuple(i -> Float16(i), 2 * 8)) == ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)
+            @test CUDAnative.unflatten(Int64, (5,))                                                               == 5
+            @test CUDAnative.unflatten(Float64, (5.0,))                                                           == 5.0
+            @test CUDAnative.unflatten(VecElement{Float16}, (Float16(5),))                                        == VecElement{Float16}(5)
+            @test CUDAnative.unflatten(NTuple{8, Int64}, ntuple(i -> i, 8))                                       == ntuple(i -> i, 8)
+            @test CUDAnative.unflatten(NTuple{8, VecElement{Float16}}, ntuple(i -> Float16(i), 8))                == ntuple(i -> VecElement{Float16}(i), 8)
+            @test CUDAnative.unflatten(NTuple{8, NTuple{2, Int64}}, ntuple(i -> i, 2 * 8))                        == ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8)
+            @test CUDAnative.unflatten(NTuple{8, NTuple{2, VecElement{Float16}}}, ntuple(i -> Float16(i), 2 * 8)) == ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)
         end
     end
 
