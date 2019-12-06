@@ -175,18 +175,18 @@ if VERSION >= v"1.4.0-DEV.534"
 
     @testset "Broadcasting over fragments: size=$sz, type=$ty" for sz = [1, 2, 5],
             ty = [Float16, Float32]
-            @test ty(5) .* wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(i), sz)) == wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(5 * i), sz))
-            @test ty(5) .+ wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(i), sz)) == wmma_fragment{16, 16, 16, sz, ty, wmma_row_major, wmma_matrix_a}(ntuple(i -> ty(5 + i), sz))
+            @test ty(5) .* WmmaFragment{16, 16, 16, sz, ty, WmmaRowMajor, WmmaMatrixA}(ntuple(i -> ty(i), sz)) == WmmaFragment{16, 16, 16, sz, ty, WmmaRowMajor, WmmaMatrixA}(ntuple(i -> ty(5 * i), sz))
+            @test ty(5) .+ WmmaFragment{16, 16, 16, sz, ty, WmmaRowMajor, WmmaMatrixA}(ntuple(i -> ty(i), sz)) == WmmaFragment{16, 16, 16, sz, ty, WmmaRowMajor, WmmaMatrixA}(ntuple(i -> ty(5 + i), sz))
     end
 
 ################################################################################
 
     @testset "CUDA C-style API" begin
 
-        @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [wmma_col_major, wmma_row_major],
-            b_layout in [wmma_col_major, wmma_row_major],
-            c_layout in [wmma_col_major, wmma_row_major],
-            d_layout in [wmma_col_major, wmma_row_major],
+        @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [WmmaColMajor, WmmaRowMajor],
+            b_layout in [WmmaColMajor, WmmaRowMajor],
+            c_layout in [WmmaColMajor, WmmaRowMajor],
+            d_layout in [WmmaColMajor, WmmaRowMajor],
             c_type in [Float16, Float32],
             d_type in [Float16, Float32],
             do_mac in [true, false]
@@ -205,7 +205,7 @@ if VERSION >= v"1.4.0-DEV.534"
             beta  = rand(c_type)
 
             @eval function kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
-                conf = wmma_config{16, 16, 16, $d_type}
+                conf = WmmaConfig{16, 16, 16, $d_type}
 
                 a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
                 b_frag = wmma_load_b(pointer(b_dev), 16, $b_layout, conf)
@@ -229,10 +229,10 @@ if VERSION >= v"1.4.0-DEV.534"
             @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
             d = Array(d_dev)
 
-            new_a = (a_layout == wmma_col_major) ? a : transpose(a)
-            new_b = (b_layout == wmma_col_major) ? b : transpose(b)
-            new_c = (c_layout == wmma_col_major) ? c : transpose(c)
-            new_d = (d_layout == wmma_col_major) ? d : transpose(d)
+            new_a = (a_layout == WmmaColMajor) ? a : transpose(a)
+            new_b = (b_layout == WmmaColMajor) ? b : transpose(b)
+            new_c = (c_layout == WmmaColMajor) ? c : transpose(c)
+            new_d = (d_layout == WmmaColMajor) ? d : transpose(d)
 
             if do_mac
                 @test all(isapprox.(alpha * new_a * new_b + beta * new_c, new_d; rtol=sqrt(eps(Float16))))

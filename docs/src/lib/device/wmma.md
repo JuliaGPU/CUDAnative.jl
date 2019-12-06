@@ -161,24 +161,24 @@ Note that, in CUDA C++, the fragment is responsible for both the storage of inte
 All CUDA C++ WMMA calls are function templates that take the resultant fragment as a by-reference argument.
 As a result, the type of this argument can be used during overload resolution to select the correct WMMA instruction to call.
 
-In contrast, the API in Julia separates the WMMA storage ([`wmma_fragment`](@ref)) and configuration ([`wmma_config`](@ref)).
+In contrast, the API in Julia separates the WMMA storage ([`WmmaFragment`](@ref)) and configuration ([`WmmaConfig`](@ref)).
 Instead of taking the resultant fragment by reference, the Julia functions just return it.
 This makes the dataflow clearer, but it also means that the type of that fragment cannot be used for selection of the correct WMMA instruction.
 Thus, there is still a limited amount of information that cannot be inferred from the argument types, but must nonetheless match for all WMMA operations, such as the overall shape of the MMA.
-This is accomplished by a separate "WMMA configuration" (see [`wmma_config`](@ref)) that you create once, and then give as an argument to all intrinsics.
+This is accomplished by a separate "WMMA configuration" (see [`WmmaConfig`](@ref)) that you create once, and then give as an argument to all intrinsics.
 
 ### Fragment
 ```@docs
-CUDAnative.wmma_fragment_layout
-CUDAnative.wmma_row_major
-CUDAnative.wmma_col_major
-CUDAnative.wmma_unspecified
-CUDAnative.wmma_fragment
+CUDAnative.WmmaFragmentLayout
+CUDAnative.WmmaRowMajor
+CUDAnative.WmmaColMajor
+CUDAnative.WmmaUnspecified
+CUDAnative.WmmaFragment
 ```
 
 ### WMMA configuration
 ```@docs
-CUDAnative.wmma_config
+CUDAnative.WmmaConfig
 ```
 
 ### Load matrix
@@ -220,15 +220,15 @@ c_dev = CuArray(c)
 d_dev = similar(c_dev)
 
 function kernel(a_dev, b_dev, c_dev, d_dev)
-    conf = wmma_config{16, 16, 16, Float32}
+    conf = WmmaConfig{16, 16, 16, Float32}
 
-    a_frag = wmma_load_a(pointer(a_dev), 16, wmma_col_major, conf)
-    b_frag = wmma_load_b(pointer(b_dev), 16, wmma_col_major, conf)
-    c_frag = wmma_load_c(pointer(c_dev), 16, wmma_col_major, conf)
+    a_frag = wmma_load_a(pointer(a_dev), 16, WmmaColMajor, conf)
+    b_frag = wmma_load_b(pointer(b_dev), 16, WmmaColMajor, conf)
+    c_frag = wmma_load_c(pointer(c_dev), 16, WmmaColMajor, conf)
 
     d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
 
-    wmma_store_d(pointer(d_dev), d_frag, 16, wmma_col_major, conf)
+    wmma_store_d(pointer(d_dev), d_frag, 16, WmmaColMajor, conf)
 
     return
 end
