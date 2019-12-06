@@ -205,33 +205,33 @@ end
 # WMMA fragment
 # -------------
 
-export WmmaFragmentLayout, WmmaRowMajor, WmmaColMajor, WmmaUnspecified
+export WMMAFragmentLayout, WMMARowMajor, WMMAColMajor, WMMAUnspecified
 
 """
-    WmmaFragmentLayout
+    WMMAFragmentLayout
 
 Abstract type that specifies the storage layout of a matrix.
 
-Possible values are [`WmmaRowMajor`](@ref), [`WmmaColMajor`](@ref) and [`WmmaUnspecified`](@ref).
+Possible values are [`WMMARowMajor`](@ref), [`WMMAColMajor`](@ref) and [`WMMAUnspecified`](@ref).
 """
-abstract type WmmaFragmentLayout end
+abstract type WMMAFragmentLayout end
 
 """
-    WmmaRowMajor
+    WMMARowMajor
 
 Type that represents a matrix stored in row major (C style) order.
 """
-struct WmmaRowMajor <: WmmaFragmentLayout end
+struct WMMARowMajor <: WMMAFragmentLayout end
 
 """
-    WmmaColMajor
+    WMMAColMajor
 
 Type that represents a matrix stored in column major (Julia style) order.
 """
-struct WmmaColMajor <: WmmaFragmentLayout end
+struct WMMAColMajor <: WMMAFragmentLayout end
 
 """
-    WmmaUnspecified
+    WMMAUnspecified
 
 Type that represents a matrix stored in an unspecified order.
 
@@ -239,27 +239,27 @@ Type that represents a matrix stored in an unspecified order.
 
     This storage format is not valid for all WMMA operations!
 """
-struct WmmaUnspecified <: WmmaFragmentLayout end
+struct WMMAUnspecified <: WMMAFragmentLayout end
 
 
-export WmmaMatrixA, WmmaMatrixB, WmmaAccumulator
+export WMMAMatrixA, WMMAMatrixB, WMMAAccumulator
 
-abstract type WmmaFragmentUse end
-struct WmmaMatrixA <: WmmaFragmentUse end
-struct WmmaMatrixB <: WmmaFragmentUse end
-struct WmmaAccumulator <: WmmaFragmentUse end
+abstract type WMMAFragmentUse end
+struct WMMAMatrixA <: WMMAFragmentUse end
+struct WMMAMatrixB <: WMMAFragmentUse end
+struct WMMAAccumulator <: WMMAFragmentUse end
 
 
-export WmmaFragment
+export WMMAFragment
 
 """
-    WmmaFragment
+    WMMAFragment
 
 Type that represents per-thread intermediate results of WMMA operations.
 
 You can access individual elements using the `x` member, but beware that the exact ordering of elements is unspecified.
 """
-struct WmmaFragment{M, N, K, FS, T, L <: WmmaFragmentLayout, U <: WmmaFragmentUse}
+struct WMMAFragment{M, N, K, FS, T, L <: WMMAFragmentLayout, U <: WMMAFragmentUse}
     x::NTuple{FS, T}
 end
 
@@ -267,10 +267,10 @@ end
 # WMMA configuration
 # ------------------
 
-export WmmaConfig
+export WMMAConfig
 
 """
-    WmmaConfig{M, N, K, d_type}
+    WMMAConfig{M, N, K, d_type}
 
 Type that contains all information for WMMA operations that cannot be inferred from the argument's types.
 
@@ -279,15 +279,15 @@ WMMA instructions calculate the matrix multiply-accumulate operation ``D = A \\c
 
 `d_type` refers to the type of the elements of matrix ``D``, and can be either `Float16` or `Float32`.
 
-All WMMA operations take a `WmmaConfig` as their final argument.
+All WMMA operations take a `WMMAConfig` as their final argument.
 
 # Examples
 ```jldoctest
-julia> config = WmmaConfig{16, 16, 16, Float32}
-WmmaConfig{16,16,16,Float32}
+julia> config = WMMAConfig{16, 16, 16, Float32}
+WMMAConfig{16,16,16,Float32}
 ```
 """
-struct WmmaConfig{M, N, K, d_type} end
+struct WMMAConfig{M, N, K, d_type} end
 
 # ---------
 # Constants
@@ -305,8 +305,8 @@ map_as_ty_to_str = Dict(
 
 # Maps layout types to string
 map_layout_ty_to_str = Dict(
-                            WmmaRowMajor => "row",
-                            WmmaColMajor => "col"
+                            WMMARowMajor => "row",
+                            WMMAColMajor => "col"
                            )
 
 # Maps matrix & type to number of elements (size after flattening)
@@ -321,10 +321,10 @@ map_num_elems = Dict(
 
 # Maps matrix to its use
 map_matrix_to_use = Dict(
-                      "a" => WmmaMatrixA,
-                      "b" => WmmaMatrixB,
-                      "c" => WmmaAccumulator,
-                      "d" => WmmaAccumulator
+                      "a" => WMMAMatrixA,
+                      "b" => WMMAMatrixB,
+                      "c" => WMMAAccumulator,
+                      "d" => WMMAAccumulator
                         )
 
 # ----------------
@@ -387,15 +387,15 @@ export wmma_load_a, wmma_load_b, wmma_load_c
     wmma_load_b(addr, stride, layout, config)
     wmma_load_c(addr, stride, layout, config)
 
-Load the matrix `a`, `b` or `c` from the memory location indicated by `addr`, and return the resulting [`WmmaFragment`](@ref).
+Load the matrix `a`, `b` or `c` from the memory location indicated by `addr`, and return the resulting [`WMMAFragment`](@ref).
 
 # Arguments
 - `addr`: The address to load the matrix from.
 - `stride`: The leading dimension of the matrix pointed to by `addr`, specified in number of elements.
-- `layout`: The storage layout of the matrix. Possible values are [`WmmaRowMajor`](@ref) and [`WmmaColMajor`](@ref).
-- `config`: The WMMA configuration that should be used for loading this matrix. See [`WmmaConfig`](@ref).
+- `layout`: The storage layout of the matrix. Possible values are [`WMMARowMajor`](@ref) and [`WMMAColMajor`](@ref).
+- `config`: The WMMA configuration that should be used for loading this matrix. See [`WMMAConfig`](@ref).
 
-See also: [`WmmaFragment`](@ref), [`WmmaFragmentLayout`](@ref), [`WmmaConfig`](@ref)
+See also: [`WMMAFragment`](@ref), [`WMMAFragmentLayout`](@ref), [`WMMAConfig`](@ref)
 
 !!! warning
 
@@ -410,21 +410,21 @@ for mat in ["a", "b", "c"]
     @eval @generated function $func_name(addr::DevicePtr{T, AS},
                                          stride::Number,
                                          layout::Type{L},
-                                         config::Type{WmmaConfig{M, N, K, D_TYPE}}) where {T, AS, L, M, N, K, D_TYPE}
+                                         config::Type{WMMAConfig{M, N, K, D_TYPE}}) where {T, AS, L, M, N, K, D_TYPE}
 
         as_str                 = get_hl_as_info(AS)
         layout                 = get_hl_layout(L)
         shape                  = get_hl_shape(M, N, K)
         num_els, _, _, arr_str = get_hl_frag_info($mat, T)
         U                      = get_hl_mat_use($mat)
-        L_ret                  = ($mat == "c") ? WmmaUnspecified : L
+        L_ret                  = ($mat == "c") ? WMMAUnspecified : L
 
         # Name of the Julia wrapper
         wrapper = Symbol(join_nonempty("llvm", "wmma", "load", $mat, layout, shape, as_str, "stride", arr_str, "_"))
 
         return quote
             x = flatten($wrapper(addr, stride))
-            return WmmaFragment{$M, $N, $K, $num_els, $T, $L_ret, $U}(x)
+            return WMMAFragment{$M, $N, $K, $num_els, $T, $L_ret, $U}(x)
         end
     end
 end
@@ -443,10 +443,10 @@ Perform the matrix multiply-accumulate operation ``D = A \\cdot B + C``.
 
 # Arguments
 
-- `a`: The [`WmmaFragment`](@ref) corresponding to the matrix ``A``.
-- `b`: The [`WmmaFragment`](@ref) corresponding to the matrix ``B``.
-- `c`: The [`WmmaFragment`](@ref) corresponding to the matrix ``C``.
-- `conf`: The [`WmmaConfig`](@ref) that should be used in this WMMA operation.
+- `a`: The [`WMMAFragment`](@ref) corresponding to the matrix ``A``.
+- `b`: The [`WMMAFragment`](@ref) corresponding to the matrix ``B``.
+- `c`: The [`WMMAFragment`](@ref) corresponding to the matrix ``C``.
+- `conf`: The [`WMMAConfig`](@ref) that should be used in this WMMA operation.
 
 !!! warning
 
@@ -455,10 +455,10 @@ Perform the matrix multiply-accumulate operation ``D = A \\cdot B + C``.
 """
 wmma_mma
 
-@generated function wmma_mma(a::WmmaFragment{M, N, K, A_SZ, A_T, A_L, WmmaMatrixA},
-                             b::WmmaFragment{M, N, K, B_SZ, B_T, B_L, WmmaMatrixB},
-                             c::WmmaFragment{M, N, K, C_SZ, C_T, WmmaUnspecified, WmmaAccumulator},
-                             config::Type{WmmaConfig{M, N, K, D_T}}) where {M, N, K, A_SZ, A_T, A_L, B_SZ, B_T, B_L, C_SZ, C_T, D_T}
+@generated function wmma_mma(a::WMMAFragment{M, N, K, A_SZ, A_T, A_L, WMMAMatrixA},
+                             b::WMMAFragment{M, N, K, B_SZ, B_T, B_L, WMMAMatrixB},
+                             c::WMMAFragment{M, N, K, C_SZ, C_T, WMMAUnspecified, WMMAAccumulator},
+                             config::Type{WMMAConfig{M, N, K, D_T}}) where {M, N, K, A_SZ, A_T, A_L, B_SZ, B_T, B_L, C_SZ, C_T, D_T}
 
     _, a_frag_sz, a_frag_ty, _         = get_hl_frag_info("a", A_T)
     _, b_frag_sz, b_frag_ty, _         = get_hl_frag_info("b", B_T)
@@ -478,7 +478,7 @@ wmma_mma
         c_unfl = unflatten(NTuple{$c_frag_sz, $c_frag_ty}, c.x)
 
         x = flatten($wrapper(a_unfl, b_unfl, c_unfl))
-        return WmmaFragment{$M, $N, $K, $d_num_els, $D_T, WmmaUnspecified, WmmaAccumulator}(x)
+        return WMMAFragment{$M, $N, $K, $d_num_els, $D_T, WMMAUnspecified, WMMAAccumulator}(x)
     end
 end
 
@@ -496,12 +496,12 @@ Store the result matrix `d` to the memory location indicated by `addr`.
 
 # Arguments
 - `addr`: The address to store the matrix to.
-- `d`: The [`WmmaFragment`](@ref) corresponding to the `d` matrix.
+- `d`: The [`WMMAFragment`](@ref) corresponding to the `d` matrix.
 - `stride`: The leading dimension of the matrix pointed to by `addr`, specified in number of elements.
-- `layout`: The storage layout of the matrix. Possible values are [`WmmaRowMajor`](@ref) and [`WmmaColMajor`](@ref).
-- `config`: The WMMA configuration that should be used for storing this matrix. See [`WmmaConfig`](@ref).
+- `layout`: The storage layout of the matrix. Possible values are [`WMMARowMajor`](@ref) and [`WMMAColMajor`](@ref).
+- `config`: The WMMA configuration that should be used for storing this matrix. See [`WMMAConfig`](@ref).
 
-See also: [`WmmaFragment`](@ref), [`WmmaFragmentLayout`](@ref), [`WmmaConfig`](@ref)
+See also: [`WMMAFragment`](@ref), [`WMMAFragmentLayout`](@ref), [`WMMAConfig`](@ref)
 
 !!! warning
 
@@ -511,10 +511,10 @@ See also: [`WmmaFragment`](@ref), [`WmmaFragmentLayout`](@ref), [`WmmaConfig`](@
 wmma_store_d
 
 @generated function wmma_store_d(addr::DevicePtr{T, AS},
-                                 d::WmmaFragment{M, N, K, D_SZ, T, WmmaUnspecified, WmmaAccumulator},
+                                 d::WMMAFragment{M, N, K, D_SZ, T, WMMAUnspecified, WMMAAccumulator},
                                  stride::Number,
                                  layout::Type{L},
-                                 config::Type{WmmaConfig{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
+                                 config::Type{WMMAConfig{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
 
     as_str                             = get_hl_as_info(AS)
     layout                             = get_hl_layout(L)
@@ -541,18 +541,18 @@ export wmma_fill_c
 """
     wmma_fill_c(value, config)
 
-Return a [`WmmaFragment`](@ref) filled with the value `value`.
+Return a [`WMMAFragment`](@ref) filled with the value `value`.
 
 This operation is useful if you want to implement a matrix multiplication (and thus want to set ``C = O``).
 
 # Arguments
 - `value`: The value used to fill the fragment. Can be a `Float16` or `Float32`.
-- `config`: The WMMA configuration that should be used for this WMMA operation. See [`WmmaConfig`](@ref).
+- `config`: The WMMA configuration that should be used for this WMMA operation. See [`WMMAConfig`](@ref).
 """
 wmma_fill_c
 
 @generated function wmma_fill_c(value::T,
-                                config::Type{WmmaConfig{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
+                                config::Type{WMMAConfig{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
 
     # We can't use closures in @generated functions, so we'll have to do it this way instead of
     # ntuple(i -> val, $num_els)
@@ -562,7 +562,7 @@ wmma_fill_c
     expr = :(tuple($(args...)))
 
     return quote
-        return WmmaFragment{$M, $N, $K, $num_els, $T, WmmaUnspecified, WmmaAccumulator}($expr)
+        return WMMAFragment{$M, $N, $K, $num_els, $T, WMMAUnspecified, WMMAAccumulator}($expr)
     end
 end
 
@@ -574,33 +574,33 @@ end
 # https://github.com/JuliaLang/julia/blob/master/base/broadcast.jl
 
 
-# Custom broadcast style for WmmaFragments
-struct WmmaFragmentBroadcastStyle <: Broadcast.BroadcastStyle end
+# Custom broadcast style for WMMAFragments
+struct WMMAFragmentBroadcastStyle <: Broadcast.BroadcastStyle end
 
-# Use this broadcasting style for WmmaFragments
-Base.BroadcastStyle(::Type{<:WmmaFragment}) = WmmaFragmentBroadcastStyle()
+# Use this broadcasting style for WMMAFragments
+Base.BroadcastStyle(::Type{<:WMMAFragment}) = WMMAFragmentBroadcastStyle()
 
 # Broadcast style precedence rules
-# If we broadcast a fragment with a scalar, we want the WmmaFragment style to take precedence
-Base.BroadcastStyle(s::WmmaFragmentBroadcastStyle, t::Broadcast.DefaultArrayStyle{0}) = s
+# If we broadcast a fragment with a scalar, we want the WMMAFragment style to take precedence
+Base.BroadcastStyle(s::WMMAFragmentBroadcastStyle, t::Broadcast.DefaultArrayStyle{0}) = s
 
 # We don't want to convert fragments before broadcasting
-Base.broadcastable(frag::WmmaFragment) = frag
+Base.broadcastable(frag::WMMAFragment) = frag
 
 # Needed for broadcast machinery
-Base.axes(frag::WmmaFragment) = axes(frag.x)
+Base.axes(frag::WMMAFragment) = axes(frag.x)
 
 # Helper functions to get element at specified index
 @inline get_index(x, i) = x                           # scalar
-@inline get_index(frag::WmmaFragment, i) = frag.x[i] # WmmaFragment
+@inline get_index(frag::WMMAFragment, i) = frag.x[i] # WMMAFragment
 
 # Helper functions to get first fragment in broadcast call
 @inline find_first_fragment(args::Tuple) = find_first_fragment(args[1], Base.tail(args))
-@inline find_first_fragment(a::WmmaFragment, tail) = a
+@inline find_first_fragment(a::WMMAFragment, tail) = a
 @inline find_first_fragment(::Any, tail) = find_first_fragment(tail)
 
-# Custom broadcast implementation that returns a WmmaFragment
-@inline function Base.copy(bc::Broadcast.Broadcasted{WmmaFragmentBroadcastStyle})
+# Custom broadcast implementation that returns a WMMAFragment
+@inline function Base.copy(bc::Broadcast.Broadcasted{WMMAFragmentBroadcastStyle})
     dim = Broadcast.combine_axes(bc.args...)
 
     if length(dim) != 1
