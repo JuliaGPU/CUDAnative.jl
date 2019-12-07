@@ -116,10 +116,15 @@ In what follows, each of these will be discussed.
 ### Example
 
 ````@eval
+lines = readlines("../../../../examples/wmma/low-level.jl")
+start = findfirst(x -> x == "### START", lines) + 1
+stop = findfirst(x -> x == "### END", lines) - 1
+example = join(lines[start:stop], '\n')
+
 using Markdown
 Markdown.parse("""
 ```julia
-$(read("../../../../examples/wmma/low-level.jl", String))
+$(example)
 ```
 """)
 ````
@@ -183,10 +188,15 @@ CUDAnative.wmma_fill_c
 ### Example
 
 ````@eval
+lines = readlines("../../../../examples/wmma/high-level.jl")
+start = findfirst(x -> x == "### START", lines) + 1
+stop = findfirst(x -> x == "### END", lines) - 1
+example = join(lines[start:stop], '\n')
+
 using Markdown
 Markdown.parse("""
 ```julia
-$(read("../../../../examples/wmma/high-level.jl", String))
+$(example)
 ```
 """)
 ````
