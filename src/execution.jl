@@ -171,7 +171,7 @@ macro cuda(ex...)
         push!(code.args,
             quote
                 GC.@preserve $(vars...) begin
-                    local kernel_args = cudaconvert.(($(var_exprs...),))
+                    local kernel_args = map(cudaconvert, ($(var_exprs...),))
                     local kernel_tt = Tuple{Core.Typeof.(kernel_args)...}
                     local kernel = cufunction($(esc(f)), kernel_tt;
                                               $(map(esc, compiler_kwargs)...))
@@ -421,7 +421,7 @@ when function changes, or when different types or keyword arguments are provided
             intrinsic_fns = ["vprintf", "malloc", "free", "__assertfail",
                             "__nvvm_reflect" #= TODO: should have been optimized away =#]
             if !isempty(setdiff(undefined_fns, intrinsic_fns))
-                @timeit to[] "device runtime library" begin
+                @timeit_debug to "device runtime library" begin
                     linker = CUDAdrv.CuLink(jit_options)
                     CUDAdrv.add_file!(linker, libcudadevrt[], CUDAdrv.JIT_INPUT_LIBRARY)
                     CUDAdrv.add_data!(linker, kernel_fn, asm)

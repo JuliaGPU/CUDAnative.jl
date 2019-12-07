@@ -1,7 +1,7 @@
 include:
   - 'https://raw.githubusercontent.com/JuliaGPU/gitlab-ci/master/templates/v6.yml'
 
-image: nvidia/cuda:latest
+image: nvidia/cuda:10.1-devel
 
 variables:
   JULIA_CUDA_VERBOSE: 'true'
@@ -31,6 +31,8 @@ julia:1.2:
   tags:
     - nvidia
     - sm_75
+  variables:
+    CI_THOROUGH: 'true'
 
 julia:1.3:
   extends:
@@ -86,6 +88,17 @@ cuda:9.0:
     - nvidia
 
 
+# hardware platforms
+
+platform:arm64:
+  image: nvcr.io/nvidia/l4t-base:r32.2.1
+  extends:
+    - .julia:1.2
+    - .test
+  tags:
+    - nvidia-arm64
+
+
 # reverse tests
 
 # NOTE: reverse testing is tricky because of Manifests. we instantiate both, give priority
@@ -96,10 +109,9 @@ cuarrays:
   extends: .julia:1.2
   tags:
     - nvidia
-    - sm_75
-  image: juliagpu/cuda:10.1-cudnn7-cutensor-devel-ubuntu18.04
+  image: nvidia/cuda:10.1-devel
   script:
-    - export CUARRAYS="$HOME/.julia/dev/CuArrays"
+    - export CUARRAYS=".julia/dev/CuArrays"
     - julia -e 'using Pkg;
                 Pkg.develop("CuArrays");'
     - julia --project -e 'using Pkg;
@@ -117,8 +129,6 @@ precompile:
   extends: .julia:1.2
   image: ubuntu:bionic
   script:
-    - julia -e 'using InteractiveUtils;
-                versioninfo()'
     - julia --project -e 'using Pkg;
                           Pkg.instantiate();
                           Pkg.build();
