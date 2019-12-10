@@ -1,6 +1,8 @@
 # Need https://github.com/JuliaLang/julia/pull/33970
 # and  https://github.com/JuliaLang/julia/pull/34043
-if VERSION >= v"1.4.0-DEV.564"
+if VERSION < v"1.4.0-DEV.564"
+    exit()
+end
 
 ### START
 using CUDAnative
@@ -35,5 +37,3 @@ d = Array(d_dev)
 
 @test all(isapprox.(a * b + c, d; rtol=0.01))
 ### END
-
-end
