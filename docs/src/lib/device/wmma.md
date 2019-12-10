@@ -185,6 +185,19 @@ CUDAnative.wmma_store_d
 CUDAnative.wmma_fill_c
 ```
 
+### Element access and broadcasting
+
+Similar to the CUDA C++ WMMA API, [`WMMAFragment`](@ref)s have an `x` member that can be used to access individual elements.
+Note that, in contrast to the values returned by the LLVM intrinsics, the `x` member is flattened.
+For example, while the `Float16` variants of the `load_a` instrinsics return `NTuple{8, NTuple{2, VecElement{Float16}}}`, the `x` member has type `NTuple{16, Float16}`.
+
+Typically, you will only need to access the `x` member to perform elementwise operations.
+This can be more succinctly expressed using Julia's broadcast mechanism.
+For example, to double each element in a fragment, you can simply use:
+```julia
+frag = 2.0f0 .* frag
+```
+
 ### Example
 
 ````@eval
