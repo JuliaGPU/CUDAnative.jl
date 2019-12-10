@@ -1,5 +1,6 @@
 # Need https://github.com/JuliaLang/julia/pull/33970
-if VERSION >= v"1.4.0-DEV.534"
+# and  https://github.com/JuliaLang/julia/pull/34043
+if VERSION >= v"1.4.0-DEV.564"
 
 ### START
 using CUDAnative
