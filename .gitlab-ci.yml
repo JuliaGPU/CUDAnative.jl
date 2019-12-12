@@ -47,6 +47,7 @@ julia:nightly:
     - .test
   tags:
     - nvidia
+    - sm_75
   allow_failure: true
 
 
