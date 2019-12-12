@@ -4,6 +4,11 @@ if VERSION < v"1.4.0-DEV.564"
     exit()
 end
 
+using CUDAnative
+if CUDAnative.current_capability() < v"7.0"
+    exit()
+end
+
 ### START
 using CUDAnative
 using CuArrays
