@@ -223,7 +223,7 @@ abstract type AbstractKernel{F,TT} end
     (::DeviceKernel)(args...; kwargs...)
 
 Low-level interface to call a compiled kernel, passing GPU-compatible arguments in `args`.
-For a higher-level interface, use [`@cuda`](@ref).
+For a higher-level interface, use [`CUDAnative.@cuda`](@ref).
 
 The following keyword arguments are supported:
 - `threads` (defaults to 1)
@@ -335,15 +335,6 @@ end
 
 const agecache = Dict{UInt, UInt}()
 const compilecache = Dict{UInt, HostKernel}()
-push!(device_reset!_listeners, (dev, ctx) -> begin
-    # invalidate compiled kernels when the device resets
-    for id in collect(keys(compilecache))
-        kernel = compilecache[id]
-        if kernel.ctx == ctx
-            delete!(compilecache, id)
-        end
-    end
-end)
 
 """
     cufunction(f, tt=Tuple{}; kwargs...)
@@ -373,8 +364,6 @@ when function changes, or when different types or keyword arguments are provided
     quote
         Base.@_inline_meta
 
-        CUDAnative.maybe_initialize("cufunction")
-
         # look-up the method age
         key = hash(world_age(), $precomp_key)
         if haskey(agecache, key)
@@ -385,9 +374,9 @@ when function changes, or when different types or keyword arguments are provided
         end
 
         # generate a key for indexing the compilation cache
-        ctx = CuCurrentContext()
+        ctx = context()
         key = hash(age, $precomp_key)
-        key = hash(ctx, key)
+        key = hash(pointer_from_objref(ctx), key) # contexts are unique, but handles might alias
         key = hash(name, key)
         key = hash(kwargs, key)
         for nf in 1:nfields(f)
@@ -510,16 +499,8 @@ No keyword arguments are supported.
     delayed_cufunction(Val(f), Val(tt))
 
 # marker function that will get picked up during compilation
-if VERSION >= v"1.2.0-DEV.512"
-    @inline cudanativeCompileKernel(id::Int) =
-        ccall("extern cudanativeCompileKernel", llvmcall, Ptr{Cvoid}, (Int,), id)
-else
-    import Base.Sys: WORD_SIZE
-    @eval @inline cudanativeCompileKernel(id::Int) = Base.llvmcall(
-        $("declare i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE)",
-          "%rv = call i$WORD_SIZE @cudanativeCompileKernel(i$WORD_SIZE %0)
-           ret i$WORD_SIZE %rv"), Ptr{Cvoid}, Tuple{Int}, id)
-end
+@inline cudanativeCompileKernel(id::Int) =
+    ccall("extern cudanativeCompileKernel", llvmcall, Ptr{Cvoid}, (Int,), id)
 
 const delayed_cufunctions = Vector{Tuple{Core.Function,Type}}()
 @generated function delayed_cufunction(::Val{f}, ::Val{tt}) where {f,tt}

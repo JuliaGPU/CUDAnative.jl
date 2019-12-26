@@ -22,17 +22,17 @@ if length(devices()) > 0
     # the API shouldn't have been initialized
     @test CuCurrentContext() == nothing
 
-    device_callbacked = nothing
-    device_callback = (dev, ctx) -> begin
-        device_callbacked = dev
+    callback_data = nothing
+    CUDAnative.atcontextswitch() do tid, ctx
+        callback_data = (tid, ctx)
     end
-    push!(CUDAnative.device!_listeners, device_callback)
 
     # now cause initialization
-    Mem.alloc(Mem.Device, 1)
-    @test CuCurrentContext() != nothing
-    @test device(CuCurrentContext()) == CuDevice(0)
-    @test device_callbacked == CuDevice(0)
+    ctx = context()
+    @test CuCurrentContext() === ctx
+    @test device() == CuDevice(0)
+    @test callback_data[1] == Threads.threadid()
+    @test callback_data[2] === ctx
 
     device!(CuDevice(0))
     device!(CuDevice(0)) do
@@ -43,13 +43,14 @@ if length(devices()) > 0
 
     # test the device selection functionality
     if length(devices()) > 1
+        device!(0)
         device!(1) do
-            @test device(CuCurrentContext()) == CuDevice(1)
+            @test device() == CuDevice(1)
         end
-        @test device(CuCurrentContext()) == CuDevice(0)
+        @test device() == CuDevice(0)
 
         device!(1)
-        @test device(CuCurrentContext()) == CuDevice(1)
+        @test device() == CuDevice(1)
     end
 
     # pick a suiteable device (by available memory,
