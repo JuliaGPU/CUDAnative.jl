@@ -1,6 +1,6 @@
 # Need https://github.com/JuliaLang/julia/pull/33970
 # and  https://github.com/JuliaLang/julia/pull/34043
-if VERSION >= v"1.4.0-DEV.564" && CUDAnative.current_capability() >= v"7.0"
+if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
 @testset "WMMA" begin
 
 ################################################################################

@@ -5,10 +5,10 @@ This interface enables programmatic access to Tensor Cores, a new hardware featu
 
 Access to WMMA using CUDAnative is available in two levels: low level wrappers around the LLVM intrinsics, and a higher-level API, similar to that of CUDA C.
 
-Note that to use the WMMA intrinsics, you need a sufficiently recent version of Julia: `v1.4.0-DEV.564` or later.
+Note that to use the WMMA intrinsics, you need a sufficiently recent version of Julia: `v1.4.0-DEV.666` or later.
 You can check this by running the following in the REPL:
 ```julia
-VERSION >= v"1.4.0-DEV.564"
+VERSION >= v"1.4.0-DEV.666"
 ```
 
 !!! note
@@ -22,7 +22,7 @@ VERSION >= v"1.4.0-DEV.564"
     CUDA error: a PTX JIT compilation failed (code 218, ERROR_INVALID_PTX)
     ptxas application ptx input, line <line>; error   : .aligned modifier required for instruction '<instr>'
     ```
-    then make sure you are running Julia v1.4.0-DEV.564 or later!
+    then make sure you are running Julia v1.4.0-DEV.666 or later!
 
 ## Introduction of Terminology
 
