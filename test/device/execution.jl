@@ -70,9 +70,9 @@ end
     @test_throws ErrorException @device_code_lowered nothing
 
     # make sure kernel name aliases are preserved in the generated code
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_llvm io=io @cuda dummy())))
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_ptx io=io @cuda dummy())))
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_sass io=io @cuda dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_llvm io=io @cuda contextualize=false dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_ptx io=io @cuda contextualize=false dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_sass io=io @cuda contextualize=false dummy())))
 
     # make sure invalid kernels can be partially reflected upon
     let
@@ -96,7 +96,7 @@ end
 
     # set name of kernel
     @test occursin("ptxcall_mykernel", sprint(io->(@device_code_llvm io=io begin
-        k = cufunction(dummy, name="mykernel")
+        k = cufunction(dummy; name="mykernel", contextualize=false)
         k()
     end)))
 end
