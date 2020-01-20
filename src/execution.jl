@@ -9,7 +9,7 @@ export @cuda, cudaconvert, cufunction, dynamic_cufunction, nearest_warpsize
 # the code it generates, or the execution
 function split_kwargs(kwargs)
     macro_kws    = [:dynamic]
-    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name, :contextualize]
     call_kws     = [:cooperative, :blocks, :threads, :config, :shmem, :stream]
     macro_kwargs = []
     compiler_kwargs = []
@@ -351,6 +351,7 @@ The following keyword arguments are supported:
 - `maxregs`: the maximum number of registers to be allocated to a single thread (only
   supported on LLVM 4.0+)
 - `name`: override the name that the kernel will have in the generated code
+- `contextualize`: whether to contextualize functions using Cassette (default: true)
 
 The output of this function is automatically cached, i.e. you can simply call `cufunction`
 in a hot path without degrading performance. New code will be generated automatically, when

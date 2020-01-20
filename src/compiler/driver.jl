@@ -62,7 +62,7 @@ function codegen(target::Symbol, job::CompilerJob;
     @timeit_debug to "validation" check_method(job)
 
     @timeit_debug to "Julia front-end" begin
-        f = contextualize(job.f)
+        f = job.contextualize ? contextualize(job.f) : job.f
 
         # get the method instance
         world = typemax(UInt)
