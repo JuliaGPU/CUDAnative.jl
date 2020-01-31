@@ -27,6 +27,8 @@ julia:nightly:
   tags:
     - nvidia
     - sm_75
+  variables:
+    CI_THOROUGH: 'true'
   allow_failure: true
 
 
