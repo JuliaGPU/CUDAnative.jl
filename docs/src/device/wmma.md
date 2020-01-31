@@ -79,7 +79,7 @@ CUDAnative.llvm_wmma_store
 ### Example
 
 ````@eval
-lines = readlines("../../../../examples/wmma/low-level.jl")
+lines = readlines("../../../examples/wmma/low-level.jl")
 start = findfirst(x -> x == "### START", lines) + 1
 stop = findfirst(x -> x == "### END", lines) - 1
 example = join(lines[start:stop], '\n')
@@ -164,7 +164,7 @@ frag = 2.0f0 .* frag
 ### Example
 
 ````@eval
-lines = readlines("../../../../examples/wmma/high-level.jl")
+lines = readlines("../../../examples/wmma/high-level.jl")
 start = findfirst(x -> x == "### START", lines) + 1
 stop = findfirst(x -> x == "### END", lines) - 1
 example = join(lines[start:stop], '\n')
