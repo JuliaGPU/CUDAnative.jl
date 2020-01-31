@@ -250,10 +250,18 @@ export WMMAFragment
 
 Type that represents per-thread intermediate results of WMMA operations.
 
-You can access individual elements using the `x` member, but beware that the exact ordering of elements is unspecified.
+You can access individual elements using the `x` member or [] operator, but beware that the exact ordering of elements is unspecified.
 """
 struct WMMAFragment{M, N, K, FS, T, L <: WMMAFragmentLayout, U <: WMMAFragmentUse}
     x::NTuple{FS, T}
+end
+
+# ----------------------
+# WMMA fragment indexing
+# ----------------------
+
+for f in (:getindex, :setindex!, :firstindex, :lastindex)
+    @eval Base.$f(frag::WMMAFragment, args...) = $f(frag.x, args...)
 end
 
 # ------------------
@@ -584,8 +592,8 @@ Base.broadcastable(frag::WMMAFragment) = frag
 Base.axes(frag::WMMAFragment) = axes(frag.x)
 
 # Helper functions to get element at specified index
-@inline get_index(x, i) = x                           # scalar
-@inline get_index(frag::WMMAFragment, i) = frag.x[i] # WMMAFragment
+@inline get_index(x, i) = x                        # scalar
+@inline get_index(frag::WMMAFragment, i) = frag[i] # WMMAFragment
 
 # Helper functions to get first fragment in broadcast call
 @inline find_first_fragment(args::Tuple) = find_first_fragment(args[1], Base.tail(args))
