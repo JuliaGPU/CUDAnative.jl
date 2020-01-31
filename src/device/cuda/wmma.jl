@@ -24,12 +24,12 @@ const map_frag_sizes = Dict(
                             "d.f32" => 8
                            )
 
-# Maps PTX AS to Int
-const map_ptx_as_to_int = Dict(
-                               "" => 0,
-                               "shared" => 3,
-                               "global" => 1
-                              )
+# Maps PTX AS to CUDAnative.AS
+const map_ptx_as_to_as_ty = Dict(
+                                 ""       => AS.Generic,
+                                 "shared" => AS.Shared,
+                                 "global" => AS.Global
+                                )
 
 ################################################################################
 # HELPER FUNCTIONS
@@ -42,7 +42,7 @@ get_frag_info(matrix, ptx_el_type) = (
         map_frag_sizes["$matrix.$ptx_el_type"]
         )
 
-get_addrspace_info(addr_space) = map_ptx_as_to_int[addr_space]
+get_addrspace_info(addr_space) = convert(Int, map_ptx_as_to_as_ty[addr_space])
 
 ################################################################################
 # LOW LEVEL API
@@ -298,11 +298,7 @@ struct WMMAConfig{M, N, K, d_type} end
 const map_jl_array_to_str = Dict(val => key for (key, val) in map_ptx_to_jl_array)
 
 # Maps CUDAnative.AS types to string
-const map_as_ty_to_str = Dict(
-                              AS.Generic => "",
-                              AS.Shared => "shared",
-                              AS.Global => "global"
-                             )
+const map_as_ty_to_str = Dict(val => key for (key, val) in map_ptx_as_to_as_ty)
 
 # Maps layout types to string
 const map_layout_ty_to_str = Dict(
