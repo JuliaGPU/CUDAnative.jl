@@ -3,33 +3,33 @@
 ################################################################################
 
 # Maps PTX types to Julia array types
-map_ptx_to_jl_array = Dict(
-                           "f16" => Float16,
-                           "f32" => Float32
-                          )
+const map_ptx_to_jl_array = Dict(
+                                 "f16" => Float16,
+                                 "f32" => Float32
+                                )
 
 # Maps PTX types to Julia fragment types
-map_ptx_to_jl_frag = Dict(
-                          "f16" => NTuple{2, VecElement{Float16}},
-                          "f32" => Float32
-                         )
+const map_ptx_to_jl_frag = Dict(
+                                "f16" => NTuple{2, VecElement{Float16}},
+                                "f32" => Float32
+                               )
 
 # Maps matrix & PTX types to fragment sizes
-map_frag_sizes = Dict(
-                      "a.f16" => 8,
-                      "b.f16" => 8,
-                      "c.f16" => 4,
-                      "c.f32" => 8,
-                      "d.f16" => 4,
-                      "d.f32" => 8
-                     )
+const map_frag_sizes = Dict(
+                            "a.f16" => 8,
+                            "b.f16" => 8,
+                            "c.f16" => 4,
+                            "c.f32" => 8,
+                            "d.f16" => 4,
+                            "d.f32" => 8
+                           )
 
 # Maps PTX AS to Int
-map_ptx_as_to_int = Dict(
-                         "" => 0,
-                         "shared" => 3,
-                         "global" => 1
-                        )
+const map_ptx_as_to_int = Dict(
+                               "" => 0,
+                               "shared" => 3,
+                               "global" => 1
+                              )
 
 ################################################################################
 # HELPER FUNCTIONS
@@ -294,38 +294,38 @@ struct WMMAConfig{M, N, K, d_type} end
 # ---------
 
 # Maps Julia array types to string
-map_jl_array_to_str = Dict(val => key for (key, val) in map_ptx_to_jl_array)
+const map_jl_array_to_str = Dict(val => key for (key, val) in map_ptx_to_jl_array)
 
 # Maps CUDAnative.AS types to string
-map_as_ty_to_str = Dict(
-                        AS.Generic => "",
-                        AS.Shared => "shared",
-                        AS.Global => "global"
-                       )
+const map_as_ty_to_str = Dict(
+                              AS.Generic => "",
+                              AS.Shared => "shared",
+                              AS.Global => "global"
+                             )
 
 # Maps layout types to string
-map_layout_ty_to_str = Dict(
-                            WMMARowMajor => "row",
-                            WMMAColMajor => "col"
-                           )
+const map_layout_ty_to_str = Dict(
+                                  WMMARowMajor => "row",
+                                  WMMAColMajor => "col"
+                                 )
 
 # Maps matrix & type to number of elements (size after flattening)
-map_num_elems = Dict(
-                     ("a", Float16) => 16,
-                     ("b", Float16) => 16,
-                     ("c", Float16) => 8,
-                     ("c", Float32) => 8,
-                     ("d", Float16) => 8,
-                     ("d", Float32) => 8
-                    )
+const map_num_elems = Dict(
+                           ("a", Float16) => 16,
+                           ("b", Float16) => 16,
+                           ("c", Float16) => 8,
+                           ("c", Float32) => 8,
+                           ("d", Float16) => 8,
+                           ("d", Float32) => 8
+                          )
 
 # Maps matrix to its use
-map_matrix_to_use = Dict(
-                      "a" => WMMAMatrixA,
-                      "b" => WMMAMatrixB,
-                      "c" => WMMAAccumulator,
-                      "d" => WMMAAccumulator
-                        )
+const map_matrix_to_use = Dict(
+                               "a" => WMMAMatrixA,
+                               "b" => WMMAMatrixB,
+                               "c" => WMMAAccumulator,
+                               "d" => WMMAAccumulator
+                              )
 
 # ----------------
 # Helper functions
