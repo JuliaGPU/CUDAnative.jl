@@ -19,11 +19,6 @@ function module_setup(mod::LLVM.Module)
     end
 end
 
-# make function names safe for PTX
-safe_fn(fn::String) = replace(fn, r"[^A-Za-z0-9_]"=>"_")
-safe_fn(f::Core.Function) = safe_fn(String(nameof(f)))
-safe_fn(f::LLVM.Function) = safe_fn(LLVM.name(f))
-
 # generate a pseudo-backtrace from a stack of methods being emitted
 function backtrace(job::CompilerJob, call_stack::Vector{Core.MethodInstance})
     bt = StackTraces.StackFrame[]
@@ -141,10 +136,13 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
         elseif Base.JLOptions().debug_level >= 2
             LLVM.API.LLVMDebugEmissionKindFullDebug
         end
-        if LLVM.version() < v"9.0"
-            # NOTE: corresponding warning in __init__
+
+        #if CUDAdrv.version() < v"10.2"
+            # FIXME: LLVM's debug info crashes CUDA
+            # FIXME: this ought to be fixed on 10.2?
             debug_info_kind = LLVM.API.LLVMDebugEmissionKindNoDebug
-        end
+        #end
+
         push!(param_kwargs, :debug_info_kind => Cint(debug_info_kind))
     end
     params = Base.CodegenParams(;param_kwargs...)
@@ -236,7 +234,7 @@ function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world)
 
             # finally, make function names safe for ptxas
             # (LLVM should to do this, but fails, see eg. D17738 and D19126)
-            llvmfn′ = safe_fn(llvmfn)
+            llvmfn′ = safe_name(llvmfn)
             if llvmfn != llvmfn′
                 LLVM.name!(llvmf, llvmfn′)
                 llvmfn = llvmfn′
@@ -249,7 +247,7 @@ function irgen(job::CompilerJob, method_instance::Core.MethodInstance, world)
 
     # rename the entry point
     if job.name !== nothing
-        llvmfn = safe_fn(string("julia_", job.name))
+        llvmfn = safe_name(string("julia_", job.name))
     else
         llvmfn = replace(LLVM.name(entry), r"_\d+$"=>"")
     end
