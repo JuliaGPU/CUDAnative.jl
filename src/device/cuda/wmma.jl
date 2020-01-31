@@ -35,13 +35,6 @@ const map_ptx_as_to_int = Dict(
 # HELPER FUNCTIONS
 ################################################################################
 
-function join_nonempty(args...)
-    delim = args[end]
-    arr = [args[1:end-1]...]
-
-    return join(arr[arr .!= ""], delim)
-end
-
 # Returns (Julia array type, Julia fragment type, fragment size)
 get_frag_info(matrix, ptx_el_type) = (
         map_ptx_to_jl_array[ptx_el_type],
@@ -76,7 +69,7 @@ for mat in ["a", "b", "c"],
     addr_space_int = get_addrspace_info(addr_space)
 
     # Name of the Julia wrapper function
-    func_name = Symbol(join_nonempty("llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type, "_"))
+    func_name = Symbol(join(filter(!isempty, ["llvm", "wmma", "load", mat, layout, shape, addr_space, stride, elem_type]), "_"))
 
     # Name of the LLVM intrinsic
     llvm_intr = "llvm.nvvm.wmma.$shape.load.$mat.$layout.stride.$elem_type.p$(addr_space_int)i8"
@@ -106,7 +99,7 @@ for mat in ["d"],
     addr_space_int = get_addrspace_info(addr_space)
 
     # Name of the Julia wrapper function
-    func_name = Symbol(join_nonempty("llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type, "_"))
+    func_name = Symbol(join(filter(!isempty, ["llvm", "wmma", "store", mat, layout, shape, addr_space, stride, elem_type]), "_"))
 
     # Name of the LLVM intrinsic
     llvm_intr = "llvm.nvvm.wmma.$shape.store.$mat.$layout.stride.$elem_type.p$(addr_space_int)i8"
@@ -135,7 +128,7 @@ for a_layout in ["col", "row"],
     a_elem_type in ["f16"]
 
     # Name of the Julia wrapper function
-    func_name = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type, "_"))
+    func_name = Symbol(join(filter(!isempty, ["llvm", "wmma", "mma", a_layout, b_layout, shape, d_elem_type, c_elem_type]), "_"))
 
     # Name of the LLVM intrinsic
     llvm_intr = "llvm.nvvm.wmma.$shape.mma.$a_layout.$b_layout.$d_elem_type.$c_elem_type"
@@ -420,7 +413,7 @@ for mat in ["a", "b", "c"]
         L_ret                  = ($mat == "c") ? WMMAUnspecified : L
 
         # Name of the Julia wrapper
-        wrapper = Symbol(join_nonempty("llvm", "wmma", "load", $mat, layout, shape, as_str, "stride", arr_str, "_"))
+        wrapper = Symbol(join(filter(!isempty, ["llvm", "wmma", "load", $mat, layout, shape, as_str, "stride", arr_str]), "_"))
 
         return quote
             x = flatten($wrapper(addr, stride))
@@ -470,7 +463,7 @@ wmma_mma
     shape = get_hl_shape(M, N, K)
 
     # Name of the Julia wrapper
-    wrapper = Symbol(join_nonempty("llvm", "wmma", "mma", a_layout, b_layout, shape, d_arr_str, c_arr_str, "_"))
+    wrapper = Symbol(join(filter(!isempty, ["llvm", "wmma", "mma", a_layout, b_layout, shape, d_arr_str, c_arr_str]), "_"))
 
     return quote
         a_unfl = unflatten(NTuple{$a_frag_sz, $a_frag_ty}, a.x)
@@ -522,7 +515,7 @@ wmma_store_d
     num_els, frag_sz, frag_ty, arr_str = get_hl_frag_info("d", T)
 
     # Name of the Julia wrapper
-    wrapper = Symbol(join_nonempty("llvm", "wmma", "store", "d", layout, shape, as_str, "stride", arr_str, "_"))
+    wrapper = Symbol(join(filter(!isempty, ["llvm", "wmma", "store", "d", layout, shape, as_str, "stride", arr_str]), "_"))
 
     return quote
         d_unfl = unflatten(NTuple{$frag_sz, $frag_ty}, d.x)
