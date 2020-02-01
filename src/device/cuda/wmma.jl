@@ -321,7 +321,7 @@ export Fragment
 
 Type that represents per-thread intermediate results of WMMA operations.
 
-You can access individual elements using the `x` member or [] operator, but beware that the exact ordering of elements is unspecified.
+You can access individual elements using the `x` member or `[]` operator, but beware that the exact ordering of elements is unspecified.
 """
 struct Fragment{M, N, K, FS, T, L <: FragmentLayout, U <: FragmentUse}
     x::NTuple{FS, T}
