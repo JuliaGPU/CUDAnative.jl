@@ -1,6 +1,9 @@
 # Need https://github.com/JuliaLang/julia/pull/33970
 # and  https://github.com/JuliaLang/julia/pull/34043
 if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
+
+using CUDAnative.WMMA
+
 @testset "WMMA" begin
 
 ################################################################################
@@ -152,23 +155,23 @@ if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
 
     @testset "Flattening/unflattening" begin
         @testset "Flattening" begin
-            @test CUDAnative.flatten(5)                                                                  == (5,)
-            @test CUDAnative.flatten(5.0)                                                                == (5.0,)
-            @test CUDAnative.flatten(VecElement{Float16}(5))                                             == (Float16(5),)
-            @test CUDAnative.flatten(ntuple(i -> i, 8))                                                  == ntuple(i -> i, 8)
-            @test CUDAnative.flatten(ntuple(i -> VecElement{Float16}(i), 8))                             == ntuple(i -> Float16(i), 8)
-            @test CUDAnative.flatten(ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8))                      == ntuple(i -> i, 2 * 8)
-            @test CUDAnative.flatten(ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)) == ntuple(i -> Float16(i), 2 * 8)
+            @test CUDAnative.WMMA.flatten(5)                                                                  == (5,)
+            @test CUDAnative.WMMA.flatten(5.0)                                                                == (5.0,)
+            @test CUDAnative.WMMA.flatten(VecElement{Float16}(5))                                             == (Float16(5),)
+            @test CUDAnative.WMMA.flatten(ntuple(i -> i, 8))                                                  == ntuple(i -> i, 8)
+            @test CUDAnative.WMMA.flatten(ntuple(i -> VecElement{Float16}(i), 8))                             == ntuple(i -> Float16(i), 8)
+            @test CUDAnative.WMMA.flatten(ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8))                      == ntuple(i -> i, 2 * 8)
+            @test CUDAnative.WMMA.flatten(ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)) == ntuple(i -> Float16(i), 2 * 8)
         end
 
         @testset "Unflattening" begin
-            @test CUDAnative.unflatten(Int64, (5,))                                                               == 5
-            @test CUDAnative.unflatten(Float64, (5.0,))                                                           == 5.0
-            @test CUDAnative.unflatten(VecElement{Float16}, (Float16(5),))                                        == VecElement{Float16}(5)
-            @test CUDAnative.unflatten(NTuple{8, Int64}, ntuple(i -> i, 8))                                       == ntuple(i -> i, 8)
-            @test CUDAnative.unflatten(NTuple{8, VecElement{Float16}}, ntuple(i -> Float16(i), 8))                == ntuple(i -> VecElement{Float16}(i), 8)
-            @test CUDAnative.unflatten(NTuple{8, NTuple{2, Int64}}, ntuple(i -> i, 2 * 8))                        == ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8)
-            @test CUDAnative.unflatten(NTuple{8, NTuple{2, VecElement{Float16}}}, ntuple(i -> Float16(i), 2 * 8)) == ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)
+            @test CUDAnative.WMMA.unflatten(Int64, (5,))                                                               == 5
+            @test CUDAnative.WMMA.unflatten(Float64, (5.0,))                                                           == 5.0
+            @test CUDAnative.WMMA.unflatten(VecElement{Float16}, (Float16(5),))                                        == VecElement{Float16}(5)
+            @test CUDAnative.WMMA.unflatten(NTuple{8, Int64}, ntuple(i -> i, 8))                                       == ntuple(i -> i, 8)
+            @test CUDAnative.WMMA.unflatten(NTuple{8, VecElement{Float16}}, ntuple(i -> Float16(i), 8))                == ntuple(i -> VecElement{Float16}(i), 8)
+            @test CUDAnative.WMMA.unflatten(NTuple{8, NTuple{2, Int64}}, ntuple(i -> i, 2 * 8))                        == ntuple(i -> ntuple(j -> (i-1) * 2 + j, 2), 8)
+            @test CUDAnative.WMMA.unflatten(NTuple{8, NTuple{2, VecElement{Float16}}}, ntuple(i -> Float16(i), 2 * 8)) == ntuple(i -> ntuple(j -> VecElement{Float16}((i-1) * 2 + j), 2), 8)
         end
     end
 
@@ -176,18 +179,18 @@ if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
 
     @testset "Broadcasting over fragments: size=$sz, type=$ty" for sz = [1, 2, 5],
             ty = [Float16, Float32]
-            @test ty(5) .* WMMAFragment{16, 16, 16, sz, ty, WMMARowMajor, WMMAMatrixA}(ntuple(i -> ty(i), sz)) == WMMAFragment{16, 16, 16, sz, ty, WMMARowMajor, WMMAMatrixA}(ntuple(i -> ty(5 * i), sz))
-            @test ty(5) .+ WMMAFragment{16, 16, 16, sz, ty, WMMARowMajor, WMMAMatrixA}(ntuple(i -> ty(i), sz)) == WMMAFragment{16, 16, 16, sz, ty, WMMARowMajor, WMMAMatrixA}(ntuple(i -> ty(5 + i), sz))
+            @test ty(5) .* Fragment{16, 16, 16, sz, ty, RowMajor, MatrixA}(ntuple(i -> ty(i), sz)) == Fragment{16, 16, 16, sz, ty, RowMajor, MatrixA}(ntuple(i -> ty(5 * i), sz))
+            @test ty(5) .+ Fragment{16, 16, 16, sz, ty, RowMajor, MatrixA}(ntuple(i -> ty(i), sz)) == Fragment{16, 16, 16, sz, ty, RowMajor, MatrixA}(ntuple(i -> ty(5 + i), sz))
     end
 
 ################################################################################
 
     @testset "CUDA C-style API" begin
 
-        @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [WMMAColMajor, WMMARowMajor],
-            b_layout in [WMMAColMajor, WMMARowMajor],
-            c_layout in [WMMAColMajor, WMMARowMajor],
-            d_layout in [WMMAColMajor, WMMARowMajor],
+        @testset "$(do_mac ? "MAC" : "MUL"): A: $a_layout, B: $b_layout, C: $c_layout, D: $d_layout, C type: $c_type, D type: $d_type" for a_layout in [ColMajor, RowMajor],
+            b_layout in [ColMajor, RowMajor],
+            c_layout in [ColMajor, RowMajor],
+            d_layout in [ColMajor, RowMajor],
             c_type in [Float16, Float32],
             d_type in [Float16, Float32],
             do_mac in [true, false]
@@ -206,23 +209,23 @@ if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
             beta  = rand(c_type)
 
             @eval function kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
-                conf = WMMAConfig{16, 16, 16, $d_type}
+                conf = Config{16, 16, 16, $d_type}
 
-                a_frag = wmma_load_a(pointer(a_dev), 16, $a_layout, conf)
-                b_frag = wmma_load_b(pointer(b_dev), 16, $b_layout, conf)
+                a_frag = load_a(pointer(a_dev), 16, $a_layout, conf)
+                b_frag = load_b(pointer(b_dev), 16, $b_layout, conf)
 
                 if $do_mac
-                    c_frag = wmma_load_c(pointer(c_dev), 16, $c_layout, conf)
+                    c_frag = load_c(pointer(c_dev), 16, $c_layout, conf)
                 else
-                    c_frag = wmma_fill_c($c_type(0), conf)
+                    c_frag = fill_c($c_type(0), conf)
                 end
 
                 a_frag = alpha .* a_frag
                 c_frag = beta .* c_frag
 
-                d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
+                d_frag = mma(a_frag, b_frag, c_frag, conf)
 
-                wmma_store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
+                store_d(pointer(d_dev), d_frag, 16, $d_layout, conf)
 
                 return
             end
@@ -230,10 +233,10 @@ if VERSION >= v"1.4.0-DEV.666" && CUDAnative.current_capability() >= v"7.0"
             @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
             d = Array(d_dev)
 
-            new_a = (a_layout == WMMAColMajor) ? a : transpose(a)
-            new_b = (b_layout == WMMAColMajor) ? b : transpose(b)
-            new_c = (c_layout == WMMAColMajor) ? c : transpose(c)
-            new_d = (d_layout == WMMAColMajor) ? d : transpose(d)
+            new_a = (a_layout == ColMajor) ? a : transpose(a)
+            new_b = (b_layout == ColMajor) ? b : transpose(b)
+            new_c = (c_layout == ColMajor) ? c : transpose(c)
+            new_d = (d_layout == ColMajor) ? d : transpose(d)
 
             if do_mac
                 @test all(isapprox.(alpha * new_a * new_b + beta * new_c, new_d; rtol=sqrt(eps(Float16))))

@@ -24,15 +24,15 @@ c_dev = CuArray(c)
 d_dev = similar(c_dev)
 
 function kernel(a_dev, b_dev, c_dev, d_dev)
-    conf = WMMAConfig{16, 16, 16, Float32}
+    conf = WMMA.Config{16, 16, 16, Float32}
 
-    a_frag = wmma_load_a(pointer(a_dev), 16, WMMAColMajor, conf)
-    b_frag = wmma_load_b(pointer(b_dev), 16, WMMAColMajor, conf)
-    c_frag = wmma_load_c(pointer(c_dev), 16, WMMAColMajor, conf)
+    a_frag = WMMA.load_a(pointer(a_dev), 16, WMMA.ColMajor, conf)
+    b_frag = WMMA.load_b(pointer(b_dev), 16, WMMA.ColMajor, conf)
+    c_frag = WMMA.load_c(pointer(c_dev), 16, WMMA.ColMajor, conf)
 
-    d_frag = wmma_mma(a_frag, b_frag, c_frag, conf)
+    d_frag = WMMA.mma(a_frag, b_frag, c_frag, conf)
 
-    wmma_store_d(pointer(d_dev), d_frag, 16, WMMAColMajor, conf)
+    WMMA.store_d(pointer(d_dev), d_frag, 16, WMMA.ColMajor, conf)
 
     return
 end

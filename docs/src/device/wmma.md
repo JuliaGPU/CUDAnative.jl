@@ -63,17 +63,17 @@ In what follows, each of these will be discussed.
 
 ### Load matrix
 ```@docs
-CUDAnative.llvm_wmma_load
+CUDAnative.WMMA.llvm_wmma_load
 ```
 
 ### Perform multiply-accumulate
 ```@docs
-CUDAnative.llvm_wmma_mma
+CUDAnative.WMMA.llvm_wmma_mma
 ```
 
 ### Store matrix
 ```@docs
-CUDAnative.llvm_wmma_store
+CUDAnative.WMMA.llvm_wmma_store
 ```
 
 ### Example
@@ -106,51 +106,51 @@ Note that, in CUDA C++, the fragment is responsible for both the storage of inte
 All CUDA C++ WMMA calls are function templates that take the resultant fragment as a by-reference argument.
 As a result, the type of this argument can be used during overload resolution to select the correct WMMA instruction to call.
 
-In contrast, the API in Julia separates the WMMA storage ([`WMMAFragment`](@ref)) and configuration ([`WMMAConfig`](@ref)).
+In contrast, the API in Julia separates the WMMA storage ([`Fragment`](@ref)) and configuration ([`Config`](@ref)).
 Instead of taking the resultant fragment by reference, the Julia functions just return it.
 This makes the dataflow clearer, but it also means that the type of that fragment cannot be used for selection of the correct WMMA instruction.
 Thus, there is still a limited amount of information that cannot be inferred from the argument types, but must nonetheless match for all WMMA operations, such as the overall shape of the MMA.
-This is accomplished by a separate "WMMA configuration" (see [`WMMAConfig`](@ref)) that you create once, and then give as an argument to all intrinsics.
+This is accomplished by a separate "WMMA configuration" (see [`Config`](@ref)) that you create once, and then give as an argument to all intrinsics.
 
 ### Fragment
 ```@docs
-CUDAnative.WMMAFragmentLayout
-CUDAnative.WMMARowMajor
-CUDAnative.WMMAColMajor
-CUDAnative.WMMAUnspecified
-CUDAnative.WMMAFragment
+CUDAnative.WMMA.FragmentLayout
+CUDAnative.WMMA.RowMajor
+CUDAnative.WMMA.ColMajor
+CUDAnative.WMMA.Unspecified
+CUDAnative.WMMA.Fragment
 ```
 
 ### WMMA configuration
 ```@docs
-CUDAnative.WMMAConfig
+CUDAnative.WMMA.Config
 ```
 
 ### Load matrix
 ```@docs
-CUDAnative.wmma_load_a
-CUDAnative.wmma_load_b
-CUDAnative.wmma_load_c
+CUDAnative.WMMA.wmma_load_a
+CUDAnative.WMMA.wmma_load_b
+CUDAnative.WMMA.wmma_load_c
 ```
 
 ### Perform multiply-accumulate
 ```@docs
-CUDAnative.wmma_mma
+CUDAnative.WMMA.wmma_mma
 ```
 
 ### Store matrix
 ```@docs
-CUDAnative.wmma_store_d
+CUDAnative.WMMA.wmma_store_d
 ```
 
 ### Fill fragment
 ```@docs
-CUDAnative.wmma_fill_c
+CUDAnative.WMMA.wmma_fill_c
 ```
 
 ### Element access and broadcasting
 
-Similar to the CUDA C++ WMMA API, [`WMMAFragment`](@ref)s have an `x` member that can be used to access individual elements.
+Similar to the CUDA C++ WMMA API, [`Fragment`](@ref)s have an `x` member that can be used to access individual elements.
 Note that, in contrast to the values returned by the LLVM intrinsics, the `x` member is flattened.
 For example, while the `Float16` variants of the `load_a` instrinsics return `NTuple{8, NTuple{2, VecElement{Float16}}}`, the `x` member has type `NTuple{16, Float16}`.
 
