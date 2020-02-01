@@ -524,9 +524,9 @@ Perform the matrix multiply-accumulate operation ``D = A \\cdot B + C``.
 mma
 
 @generated function mma(a::Fragment{M, N, K, A_SZ, A_T, A_L, MatrixA},
-                             b::Fragment{M, N, K, B_SZ, B_T, B_L, MatrixB},
-                             c::Fragment{M, N, K, C_SZ, C_T, Unspecified, Accumulator},
-                             config::Type{Config{M, N, K, D_T}}) where {M, N, K, A_SZ, A_T, A_L, B_SZ, B_T, B_L, C_SZ, C_T, D_T}
+                        b::Fragment{M, N, K, B_SZ, B_T, B_L, MatrixB},
+                        c::Fragment{M, N, K, C_SZ, C_T, Unspecified, Accumulator},
+                        config::Type{Config{M, N, K, D_T}}) where {M, N, K, A_SZ, A_T, A_L, B_SZ, B_T, B_L, C_SZ, C_T, D_T}
 
     _, a_frag_sz, a_frag_ty, _         = get_hl_frag_info("a", A_T)
     _, b_frag_sz, b_frag_ty, _         = get_hl_frag_info("b", B_T)
@@ -579,10 +579,10 @@ See also: [`Fragment`](@ref), [`FragmentLayout`](@ref), [`Config`](@ref)
 store_d
 
 @generated function store_d(addr::DevicePtr{T, AS},
-                                 d::Fragment{M, N, K, D_SZ, T, Unspecified, Accumulator},
-                                 stride::Number,
-                                 layout::Type{L},
-                                 config::Type{Config{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
+                            d::Fragment{M, N, K, D_SZ, T, Unspecified, Accumulator},
+                            stride::Number,
+                            layout::Type{L},
+                            config::Type{Config{M, N, K, T}}) where {T, AS, M, N, K, D_SZ, L}
 
     as_str                             = get_hl_as_info(AS)
     layout                             = get_hl_layout(L)
@@ -620,7 +620,7 @@ This operation is useful if you want to implement a matrix multiplication (and t
 fill_c
 
 @generated function fill_c(value::T,
-                                config::Type{Config{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
+                           config::Type{Config{M, N, K, D_TYPE}}) where {T, M, N, K, D_TYPE}
 
     # We can't use closures in @generated functions, so we'll have to do it this way instead of
     # ntuple(i -> val, $num_els)
