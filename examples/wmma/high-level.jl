@@ -30,6 +30,8 @@ function kernel(a_dev, b_dev, c_dev, d_dev)
     b_frag = WMMA.load_b(pointer(b_dev), 16, WMMA.ColMajor, conf)
     c_frag = WMMA.load_c(pointer(c_dev), 16, WMMA.ColMajor, conf)
 
+    c_frag = 0.5f0 .* c_frag
+
     d_frag = WMMA.mma(a_frag, b_frag, c_frag, conf)
 
     WMMA.store_d(pointer(d_dev), d_frag, 16, WMMA.ColMajor, conf)
@@ -40,5 +42,5 @@ end
 @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev)
 d = Array(d_dev)
 
-@test all(isapprox.(a * b + c, d; rtol=0.01))
+@test all(isapprox.(a * b + 0.5 * c, d; rtol=0.01))
 ### END
