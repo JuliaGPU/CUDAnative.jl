@@ -106,11 +106,11 @@ Note that, in CUDA C++, the fragment is responsible for both the storage of inte
 All CUDA C++ WMMA calls are function templates that take the resultant fragment as a by-reference argument.
 As a result, the type of this argument can be used during overload resolution to select the correct WMMA instruction to call.
 
-In contrast, the API in Julia separates the WMMA storage ([`Fragment`](@ref)) and configuration ([`Config`](@ref)).
+In contrast, the API in Julia separates the WMMA storage ([`WMMA.Fragment`](@ref)) and configuration ([`WMMA.Config`](@ref)).
 Instead of taking the resultant fragment by reference, the Julia functions just return it.
 This makes the dataflow clearer, but it also means that the type of that fragment cannot be used for selection of the correct WMMA instruction.
 Thus, there is still a limited amount of information that cannot be inferred from the argument types, but must nonetheless match for all WMMA operations, such as the overall shape of the MMA.
-This is accomplished by a separate "WMMA configuration" (see [`Config`](@ref)) that you create once, and then give as an argument to all intrinsics.
+This is accomplished by a separate "WMMA configuration" (see [`WMMA.Config`](@ref)) that you create once, and then give as an argument to all intrinsics.
 
 ### Fragment
 ```@docs
@@ -128,29 +128,29 @@ CUDAnative.WMMA.Config
 
 ### Load matrix
 ```@docs
-CUDAnative.WMMA.wmma_load_a
-CUDAnative.WMMA.wmma_load_b
-CUDAnative.WMMA.wmma_load_c
+CUDAnative.WMMA.load_a
+CUDAnative.WMMA.load_b
+CUDAnative.WMMA.load_c
 ```
 
 ### Perform multiply-accumulate
 ```@docs
-CUDAnative.WMMA.wmma_mma
+CUDAnative.WMMA.mma
 ```
 
 ### Store matrix
 ```@docs
-CUDAnative.WMMA.wmma_store_d
+CUDAnative.WMMA.store_d
 ```
 
 ### Fill fragment
 ```@docs
-CUDAnative.WMMA.wmma_fill_c
+CUDAnative.WMMA.fill_c
 ```
 
 ### Element access and broadcasting
 
-Similar to the CUDA C++ WMMA API, [`Fragment`](@ref)s have an `x` member that can be used to access individual elements.
+Similar to the CUDA C++ WMMA API, [`WMMA.Fragment`](@ref)s have an `x` member that can be used to access individual elements.
 Note that, in contrast to the values returned by the LLVM intrinsics, the `x` member is flattened.
 For example, while the `Float16` variants of the `load_a` instrinsics return `NTuple{8, NTuple{2, VecElement{Float16}}}`, the `x` member has type `NTuple{16, Float16}`.
 
