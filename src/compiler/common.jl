@@ -7,6 +7,8 @@ Base.@kwdef struct CompilerJob
     cap::VersionNumber
     kernel::Bool
 
+    contextualize::Bool = true
+
     # optional properties
     minthreads::Union{Nothing,CuDim} = nothing
     maxthreads::Union{Nothing,CuDim} = nothing

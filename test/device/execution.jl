@@ -70,9 +70,9 @@ end
     @test_throws ErrorException @device_code_lowered nothing
 
     # make sure kernel name aliases are preserved in the generated code
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_llvm io=io @cuda dummy())))
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_ptx io=io @cuda dummy())))
-    @test occursin("ptxcall_dummy", sprint(io->(@device_code_sass io=io @cuda dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_llvm io=io @cuda contextualize=false dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_ptx io=io @cuda contextualize=false dummy())))
+    @test occursin("ptxcall_dummy", sprint(io->(@device_code_sass io=io @cuda contextualize=false dummy())))
 
     # make sure invalid kernels can be partially reflected upon
     let
@@ -96,7 +96,7 @@ end
 
     # set name of kernel
     @test occursin("ptxcall_mykernel", sprint(io->(@device_code_llvm io=io begin
-        k = cufunction(dummy, name="mykernel")
+        k = cufunction(dummy; name="mykernel", contextualize=false)
         k()
     end)))
 end
@@ -463,7 +463,7 @@ end
     val_dev = CuArray(val)
     cuda_ptr = pointer(val_dev)
     ptr = CUDAnative.DevicePtr{Int}(cuda_ptr)
-    for i in (1, 10, 20, 35)
+    for i in (1, 10, 20, 32)
         variables = ('a':'z'..., 'A':'Z'...)
         params = [Symbol(variables[j]) for j in 1:i]
         # generate a kernel
@@ -553,11 +553,11 @@ let (code, out, err) = julia_script(script, `-g2`)
     @test occursin("ERROR: KernelException: exception thrown during kernel execution on device", err)
     @test occursin("ERROR: a exception was thrown during kernel execution", out)
     if VERSION < v"1.3.0-DEV.270"
-        @test occursin("[1] Type at float.jl", out)
+        @test occursin(r"\[.\] Type at float.jl", out)
     else
-        @test occursin("[1] Int64 at float.jl", out)
+        @test occursin(r"\[.\] Int64 at float.jl", out)
     end
-    @test occursin("[2] kernel at none:2", out)
+    @test occursin(r"\[.\] kernel at none:2", out)
 end
 
 end

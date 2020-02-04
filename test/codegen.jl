@@ -8,7 +8,8 @@
     valid_kernel() = return
     invalid_kernel() = 1
 
-    ir = sprint(io->CUDAnative.code_llvm(io, valid_kernel, Tuple{}; optimize=false, dump_module=true))
+    ir = sprint(io->CUDAnative.code_llvm(io, valid_kernel, Tuple{}; dump_module=true,
+                                         contextualize=false, optimize=false))
 
     # module should contain our function + a generic call wrapper
     @test occursin("define void @julia_valid_kernel", ir)
@@ -52,7 +53,7 @@ end
     @noinline child(i) = sink(i)
     parent(i) = child(i)
 
-    ir = sprint(io->CUDAnative.code_llvm(io, parent, Tuple{Int}))
+    ir = sprint(io->CUDAnative.code_llvm(io, parent, Tuple{Int}; contextualize=false))
     @test occursin(r"call .+ @julia_child_", ir)
 end
 
@@ -76,10 +77,10 @@ end
         x::Int
     end
 
-    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Aggregate}))
+    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Aggregate}; contextualize=false))
     @test occursin(r"@julia_kernel_\d+\(({ i64 }|\[1 x i64\]) addrspace\(\d+\)?\*", ir)
 
-    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Aggregate}; kernel=true))
+    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Aggregate}; contextualize=false, kernel=true))
     @test occursin(r"@ptxcall_kernel_\d+\(({ i64 }|\[1 x i64\])\)", ir)
 end
 
@@ -135,7 +136,7 @@ end
     closure = ()->return
 
     function test_name(f, name; kwargs...)
-        code = sprint(io->CUDAnative.code_llvm(io, f, Tuple{}; kwargs...))
+        code = sprint(io->CUDAnative.code_llvm(io, f, Tuple{}; contextualize=false, kwargs...))
         @test occursin(name, code)
     end
 
@@ -235,7 +236,7 @@ end
         return
     end
 
-    asm = sprint(io->CUDAnative.code_ptx(io, parent, Tuple{Int64}))
+    asm = sprint(io->CUDAnative.code_ptx(io, parent, Tuple{Int64}; contextualize=false))
     @test occursin(r"call.uni\s+julia_child_"m, asm)
 end
 
@@ -246,7 +247,7 @@ end
         return
     end
 
-    asm = sprint(io->CUDAnative.code_ptx(io, entry, Tuple{Int64}; kernel=true))
+    asm = sprint(io->CUDAnative.code_ptx(io, entry, Tuple{Int64}; contextualize=false, kernel=true))
     @test occursin(r"\.visible \.entry ptxcall_entry_", asm)
     @test !occursin(r"\.visible \.func julia_nonentry_", asm)
     @test occursin(r"\.func julia_nonentry_", asm)
@@ -293,7 +294,7 @@ end
         return
     end
 
-    asm = sprint(io->CUDAnative.code_ptx(io, parent1, Tuple{Int}))
+    asm = sprint(io->CUDAnative.code_ptx(io, parent1, Tuple{Int}; contextualize=false))
     @test occursin(r".func julia_child_", asm)
 
     function parent2(i)
@@ -301,7 +302,7 @@ end
         return
     end
 
-    asm = sprint(io->CUDAnative.code_ptx(io, parent2, Tuple{Int}))
+    asm = sprint(io->CUDAnative.code_ptx(io, parent2, Tuple{Int}; contextualize=false))
     @test occursin(r".func julia_child_", asm)
 end
 
@@ -371,7 +372,7 @@ end
     closure = ()->nothing
 
     function test_name(f, name; kwargs...)
-        code = sprint(io->CUDAnative.code_ptx(io, f, Tuple{}; kwargs...))
+        code = sprint(io->CUDAnative.code_ptx(io, f, Tuple{}; contextualize=false, kwargs...))
         @test occursin(name, code)
     end
 
@@ -443,7 +444,7 @@ end
         return
     end
 
-    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Float32,Ptr{Float32}}))
+    ir = sprint(io->CUDAnative.code_llvm(io, kernel, Tuple{Float32,Ptr{Float32}}; contextualize=false))
     @test occursin("jl_box_float32", ir)
     CUDAnative.code_ptx(devnull, kernel, Tuple{Float32,Ptr{Float32}})
 end
@@ -458,11 +459,12 @@ end
 
 # some validation happens in the emit_function hook, which is called by code_llvm
 
+# NOTE: contextualization changes order of frames
 @testset "recursion" begin
     @eval recurse_outer(i) = i > 0 ? i : recurse_inner(i)
     @eval @noinline recurse_inner(i) = i < 0 ? i : recurse_outer(i)
 
-    @test_throws_message(CUDAnative.KernelError, CUDAnative.code_llvm(devnull, recurse_outer, Tuple{Int})) do msg
+    @test_throws_message(CUDAnative.KernelError, CUDAnative.code_llvm(devnull, recurse_outer, Tuple{Int}; contextualize=false)) do msg
         occursin("recursion is currently not supported", msg) &&
         occursin("[1] recurse_outer", msg) &&
         occursin("[2] recurse_inner", msg) &&
@@ -470,6 +472,7 @@ end
     end
 end
 
+# FIXME: contextualization removes all frames here -- changed inlining behavior?
 @testset "base intrinsics" begin
     foobar(i) = sin(i)
 

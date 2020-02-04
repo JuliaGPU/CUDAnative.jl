@@ -34,6 +34,7 @@ const ptxas = Ref{String}()
 include("utils.jl")
 
 # needs to be loaded _before_ the compiler infrastructure, because of generated functions
+isdevice() = false
 include("device/tools.jl")
 include("device/pointer.jl")
 include("device/array.jl")
@@ -44,6 +45,7 @@ include("device/runtime.jl")
 include("init.jl")
 
 include("compiler.jl")
+include("context.jl")
 include("execution.jl")
 include("exceptions.jl")
 include("reflection.jl")
