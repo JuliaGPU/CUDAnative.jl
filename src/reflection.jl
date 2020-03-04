@@ -163,7 +163,7 @@ function code_sass(io::IO, job::CompilerJob; verbose::Bool=false)
         write(cubin_io, cubin[])
         flush(cubin_io)
 
-        cmd = `$(nvdisasm[]) --print-code --print-line-info $cubin_path`
+        cmd = `$(nvdisasm) --print-code --print-line-info $cubin_path`
         for line in readlines(cmd)
             # nvdisasm output is pretty verbose;
             # perform some clean-up and make it look like @code_native

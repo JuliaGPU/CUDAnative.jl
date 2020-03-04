@@ -36,11 +36,9 @@ const libcache = Dict{String, LLVM.Module}()
 #
 
 function load_libdevice(cap)
-    path = libdevice[]
-
-    get!(libcache, path) do
-        open(path) do io
-            parse(LLVM.Module, read(path), JuliaContext())
+    get!(libcache, libdevice) do
+        open(libdevice) do io
+            parse(LLVM.Module, read(libdevice), JuliaContext())
         end
     end
 end

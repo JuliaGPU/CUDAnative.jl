@@ -162,9 +162,11 @@ cuarrays:
     - julia -e 'using Pkg;
                 Pkg.develop("CuArrays");'
     - julia --project -e 'using Pkg;
-                          Pkg.instantiate()'
+                          Pkg.instantiate();
+                          Pkg.build()'
     - julia --project=$CUARRAYS -e 'using Pkg;
                                     Pkg.instantiate();
+                                    Pkg.build();
                                     Pkg.add(["FFTW", "ForwardDiff", "FillArrays"])'
     - JULIA_LOAD_PATH=".:$CUARRAYS::" julia $CUARRAYS/test/runtests.jl
   allow_failure: true
