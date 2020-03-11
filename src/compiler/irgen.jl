@@ -119,8 +119,7 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
         @compiler_assert last(call_stack) == method job
         last_method_instance = pop!(call_stack)
     end
-    param_kwargs = [:cached             => false,
-                    :track_allocations  => false,
+    param_kwargs = [:track_allocations  => false,
                     :code_coverage      => false,
                     :static_alloc       => false,
                     :prefer_specsig     => true,
@@ -128,6 +127,9 @@ function compile_method_instance(job::CompilerJob, method_instance::Core.MethodI
                     :module_activation  => hook_module_activation,
                     :emit_function      => hook_emit_function,
                     :emitted_function   => hook_emitted_function]
+     if VERSION >= v"1.5.0-DEV.423"
+        push!(param_kwargs, :cached => false)
+    end
     if LLVM.version() >= v"8.0" && VERSION >= v"1.3.0-DEV.547"
         push!(param_kwargs, :gnu_pubnames => false)
 
