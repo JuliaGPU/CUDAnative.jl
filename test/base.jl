@@ -14,7 +14,13 @@ function post17057_parent(arr::Ptr{Int64})
 end
 
 # bug: default module activation segfaulted on NULL child function if cached=false
-params = Base.CodegenParams(cached=false)
+
+if VERSION >= v"1.5.0-DEV.423"
+    params = Base.CodegenParams()
+else
+    params = Base.CodegenParams(cached=false)
+end
+
 if VERSION >= v"1.1.0-DEV.762"
     _dump_function(post17057_parent, Tuple{Ptr{Int64}},
                    #=native=#false, #=wrapper=#false, #=strip=#false,
