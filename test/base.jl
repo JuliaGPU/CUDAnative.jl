@@ -15,7 +15,7 @@ end
 
 # bug: default module activation segfaulted on NULL child function if cached=false
 
-if VERSION >= v"1.5.0-DEV.423"
+if VERSION >= v"1.5.0-DEV.393"
     params = Base.CodegenParams()
 else
     params = Base.CodegenParams(cached=false)
