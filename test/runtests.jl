@@ -34,6 +34,8 @@ include("device/pointer.jl")
 include("device/array.jl")
 include("device/cuda.jl")
 include("device/wmma.jl")
+include("device/tiling.jl")
+include("device/matmul_kernels.jl")
 
 include("nvtx.jl")
 

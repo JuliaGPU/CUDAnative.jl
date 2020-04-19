@@ -261,3 +261,30 @@ unsafe_cached_load(p::DevicePtr{<:LDGTypes,AS.Global}, i::Integer=1, align::Val=
 #       e.g. destruct/load/reconstruct, but that's too complicated for what it's worth.
 unsafe_cached_load(p::DevicePtr, i::Integer=1, align::Val=Val(1)) =
     pointerref(p, Int(i), align)
+
+# TODO: make this less hacky
+
+export Vec
+struct Vec{N, T} end
+
+export vloada
+@inline @generated function vloada(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, i::Integer = 1) where {N, T, AS}
+    alignment = sizeof(T) * N
+    vec_len = (sizeof(T) * N) ÷ sizeof(Float32)
+
+    return quote
+        vec_ptr = convert(CUDAnative.DevicePtr{NTuple{$vec_len, VecElement{Float32}}, AS}, ptr)
+        return unsafe_load(vec_ptr, (i - 1) ÷ N + 1, Val($alignment))
+    end
+end
+
+export vstorea!
+@inline @generated function vstorea!(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, x, i::Integer = 1) where {N, T, AS}
+    alignment = sizeof(T) * N
+    vec_len = (sizeof(T) * N) ÷ sizeof(Float32)
+
+    return quote
+        vec_ptr = convert(CUDAnative.DevicePtr{NTuple{$vec_len, VecElement{Float32}}, AS}, ptr)
+        unsafe_store!(vec_ptr, x, (i - 1) ÷ N + 1, Val($alignment))
+    end
+end
