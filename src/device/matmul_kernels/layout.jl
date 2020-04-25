@@ -46,9 +46,14 @@ struct AlignedColMajor{T} <: LayoutBase{T} end
     @unroll for j = 1 : size[2]
         @unroll for i = 1 : vec_len : size[1]
             t = translate(tile, (i - 1, j - 1))
-            ind = Tuple(t.index) .+ 1
-            @inbounds linear_index = LinearIndices(Base.size(workspace))[ind...]
-            @inbounds res[i, j] = vloada(Vec{vec_len, T}, pointer(workspace), linear_index)
+
+            base = Tuple(t.base) .+ 1
+            @inbounds linear_base = LinearIndices(Base.size(workspace))[base...]
+
+            offset = Tuple(t.offset) .+ 1
+            @inbounds linear_offset = LinearIndices(Base.size(workspace))[offset...]
+
+            @inbounds res[i, j] = vloada(Vec{vec_len, T}, pointer(workspace, linear_base), linear_offset)
         end
     end
 
@@ -61,9 +66,14 @@ end
     @unroll for j = 1 : size[2]
         @unroll for i = 1 : vec_len : size[1]
             t = translate(tile, (i - 1, j - 1))
-            ind = Tuple(t.index) .+ 1
-            @inbounds linear_index = LinearIndices(Base.size(workspace))[ind...]
-            vstorea!(Vec{vec_len, T}, pointer(workspace), value[i, j], linear_index)
+
+            base = Tuple(t.base) .+ 1
+            @inbounds linear_base = LinearIndices(Base.size(workspace))[base...]
+
+            offset = Tuple(t.offset) .+ 1
+            @inbounds linear_offset = LinearIndices(Base.size(workspace))[offset...]
+
+            vstorea!(Vec{vec_len, T}, pointer(workspace, linear_base), value[i, j], linear_offset)
         end
     end
 end
