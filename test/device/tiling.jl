@@ -39,7 +39,7 @@ using CUDAnative.Tiling
             tile = Tile(M = num_tiles.M * tile_size.M, N = num_tiles.N * tile_size.N)
 
             for i = 1 : num_tiles.M * num_tiles.N
-                t = subdivide(tile, tile_size, i, num_tiles.M * num_tiles.N)
+                t = subdivide(tile, Tile(tile_size), i, num_tiles.M * num_tiles.N)
 
                 @test t.offset == (M = 0, N = 0)
                 @test t.base   == (M = tile_size.M * mod(i - 1, num_tiles.M), N = tile_size.N * fld(i - 1, num_tiles.M))
@@ -53,7 +53,7 @@ using CUDAnative.Tiling
             tile = Tile(M = num_tiles.M * tile_size.M, N = num_tiles.N * tile_size.N)
 
             for i = 1 : (num_tiles.M * num_tiles.N) ÷ 2
-                t1, t2 = parallellise(tile, tile_size, i, (num_tiles.M * num_tiles.N) ÷ 2)
+                t1, t2 = parallellise(tile, Tile(tile_size), i, (num_tiles.M * num_tiles.N) ÷ 2)
 
                 @test t1.offset == (M = 0, N = 0)
                 @test t2.offset == (M = 0, N = 4 * tile_size.N)

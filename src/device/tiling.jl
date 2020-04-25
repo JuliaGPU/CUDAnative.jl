@@ -6,7 +6,7 @@ module Tiling
 
 export Tile
 """
-    Tile{names, T}
+    Tile{size, names, T}
 
 A [`Tile`](@ref) represents a part of a multidimensional tensor that is
 contiguous and aligned to the tensor's dimensions.
@@ -30,13 +30,12 @@ you intend to keep.
 For example, to drop the `K` dimension of a tile containing `M`, `N` and `K`
 dimensions, you can use the syntax `tile.MN`.
 """
-struct Tile{names, T}
+struct Tile{size, names, T}
     base::NamedTuple{names, T}
     offset::NamedTuple{names, T}
-    size::NamedTuple{names, T}
 end
 
-function Base.show(io::IO, tile::Tile{names, T}) where {names, T}
+function Base.show(io::IO, tile::Tile{size, names, T}) where {size, names, T}
     print(io, "base:   ", tile.base, '\n')
     print(io, "offset: ", tile.offset, '\n')
     print(io, "size:   ", tile.size)
@@ -70,12 +69,17 @@ Creates a new [`Tile`](@ref) of the given `size`, with zero `base` and
 CUDAnative.Tiling.Tile((M = 24, N = 16, K = 4))
 ```
 """
-Tile(size::NamedTuple{names, T}) where {names, T} = Tile{names, T}(map(x -> 0, size), map(x -> 0, size), size)
+@inline Tile(size::NamedTuple{names, T}) where {names, T} = Tile{size, names, T}(map(x -> 0, size), map(x -> 0, size))
 
-@generated function getproperty_impl(tile::Tile{names, T}, ::Val{sym}) where {names, T, sym}
-    if sym == :base || sym == :offset || sym == :size
+@inline projection_impl(base::NamedTuple{names, T}, offset::NamedTuple{names, T}, size::NamedTuple{names, T}) where {names, T} = Tile{size, names, T}(base, offset)
+
+@generated function getproperty_impl(tile::Tile{size, names, T}, ::Val{sym}) where {names, T, sym, size}
+    if sym == :base || sym == :offset
         # fields
         return :(getfield(tile, sym))
+    elseif sym == :size
+        # size
+        return size
     elseif sym == :index
         # index: sum of base and offset
         return :(map(+, getfield(tile, :base), getfield(tile, :offset)))
@@ -83,11 +87,13 @@ Tile(size::NamedTuple{names, T}) where {names, T} = Tile{names, T}(map(x -> 0, s
         # tile projection
         sym_str = String(sym)
         names = ntuple(i -> Symbol(sym_str[i]), length(sym_str))
-        return :( Tile(NamedTuple{$names}(getfield(tile, :base)), NamedTuple{$names}(getfield(tile, :offset)), NamedTuple{$names}(getfield(tile, :size))) )
+        return :( projection_impl(NamedTuple{$names}(getfield(tile, :base)),
+                                  NamedTuple{$names}(getfield(tile, :offset)),
+                                  NamedTuple{$names}(size)) )
     end
 end
 
-@inline Base.getproperty(tile::Tile{names, T}, sym::Symbol) where {names, T} = getproperty_impl(tile, Val(sym))
+@inline Base.getproperty(tile::Tile{size, names, T}, sym::Symbol) where {names, T, size} = getproperty_impl(tile, Val(sym))
 
 export linearise
 
@@ -117,10 +123,12 @@ Translate (i.e. move) a [`Tile`](@ref) by a constant `offset`.
 - `tile`: The [`Tile`](@ref) to translate.
 - `offset`: The `offset` in each dimension.
 """
-@inline function translate(tile::Tile{names, T}, offset::NamedTuple{names, T}) where {names, T}
+@inline function translate(tile::Tile{size, names, T}, offset::NamedTuple{names, T}) where {names, T, size}
     base = map(+, tile.base, offset)
-    return Tile(base, tile.offset, tile.size)
+    return Tile{size, names, T}(base, tile.offset)
 end
+
+@inline translate(tile::Tile{size, names, T}, offset::Tuple) where {names, T, size} = translate(tile, NamedTuple{names}(offset))
 
 # -------------
 # TileIterators
@@ -135,10 +143,9 @@ A [`TileIterator`](@ref) represents an iterator over a set of [`Tile`](@ref)s.
 
 See also: [`subdivide`](@ref), [`parallellise`](@ref).
 """
-struct TileIterator{names, T, N, R}
-    parent::Tile{names, T}
-    tile_size::T
-    subtile_indices::CartesianIndices{N, R}
+struct TileIterator{tile_size, parent_size, names, T, S}
+    parent::Tile{parent_size, names, T}
+    subtile_indices::S
     idx::Int32
     step::Int32
 end
@@ -164,16 +171,15 @@ the calling entity.
 - `idx`: The identity of the calling entity.
 - `count`: The number of cooperating entities.
 """
-@inline function parallellise(tile::Tile{names, T}, tiling_size::NamedTuple{names, T}, idx, count) where {names, T}
+@inline function parallellise(tile::Tile{size, names, T}, tiling_size::Tile{tile_sz, names, T}, idx, count) where {names, T, size, tile_sz}
     # Number of tiles along each dimension
-    num_tiles = map(div, Tuple(tile.size), Tuple(tiling_size))
+    num_tiles = map(div, Tuple(size), Tuple(tile_sz))
 
     parent = tile
-    tile_size = Tuple(tiling_size)
     subtile_indices = CartesianIndices(num_tiles)
     step = count
 
-    return TileIterator(parent, tile_size, subtile_indices, convert(Int32, idx), convert(Int32, step))
+    return TileIterator{tile_sz, size, names, T, typeof(subtile_indices)}(parent, subtile_indices, convert(Int32, idx), convert(Int32, step))
 end
 
 export subdivide
@@ -195,21 +201,21 @@ Returns the [`Tile`](@ref) that the calling entity is responsible for.
 - `idx`: The identity of the calling entity.
 - `count`: The number of cooperating entities.
 """
-@inline function subdivide(tile::Tile{names, T}, tiling_size::NamedTuple{names, T}, idx, count) where {names, T}
+@inline function subdivide(tile::Tile{size, names, T}, tiling_size::Tile{tile_sz, names, T}, idx, count) where {names, T, size, tile_sz}
     return iterate(parallellise(tile, tiling_size, idx, count))[1]
 end
 
-@inline function Base.iterate(it::TileIterator{names, T, N, R}, state = 1) where {names, T, N, R}
+@inline function Base.iterate(it::TileIterator{tile_size, parent_size, names, T, S}, state = 1) where {tile_size, parent_size, names, T, S}
     if state > length(it.subtile_indices)
         return nothing
     end
 
     # Calculate base and offset in number of tiles
-    @inbounds base   = Tuple(it.parent.base)   .+ (Tuple(it.subtile_indices[it.idx]) .- 1) .* Tuple(it.tile_size)
-    @inbounds offset = Tuple(it.parent.offset) .+ (Tuple(it.subtile_indices[state])  .- 1) .* Tuple(it.tile_size)
+    @inbounds base   = Tuple(it.parent.base)   .+ (Tuple(it.subtile_indices[it.idx]) .- 1) .* Tuple(tile_size)
+    @inbounds offset = Tuple(it.parent.offset) .+ (Tuple(it.subtile_indices[state])  .- 1) .* Tuple(tile_size)
 
     # Create tile
-    tile = Tile{names, T}(NamedTuple{names, T}(base), NamedTuple{names, T}(offset), NamedTuple{names, T}(it.tile_size))
+    tile = Tile{tile_size, names, T}(NamedTuple{names, T}(base), NamedTuple{names, T}(offset))
 
     return (tile, state + it.step)
 end
