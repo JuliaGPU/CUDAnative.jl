@@ -16,6 +16,8 @@ function plot_results(file, label)
 end
 
 plot_results("cudanative.csv", "CUDAnative")
+plot_results("cudanative-generic-fp32.csv", "CUDAnative generic (FP32)")
+plot_results("cudanative-generic-fp16.csv", "CUDAnative generic (FP16)")
 plot_results("cublas.csv", "cuBLAS")
 plot_results("cutlass-wmma.csv", "CUTLASS (WMMA)")
 plot_results("cutlass-mma.csv", "CUTLASS (mma.m8n8k4)")
