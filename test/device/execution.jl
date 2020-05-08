@@ -1062,17 +1062,17 @@ end
         return
     end
 
-    tests = []
+    test_lock = ReentrantLock()
     Threads.@threads for id in 1:10
         da = CuArray{Int}(undef, 2)
         tid = Threads.threadid()
         @cuda kernel(da, tid, id)
-        push!(tests, :(@test Array($da) == [$tid, $id]))
-    end
+        a = Array(da)
 
-    # @testset is not thread safe
-    for test in tests
-        eval(test)
+        # @testset is not thread safe
+        lock(test_lock) do
+            @test a == [tid, id]
+        end
     end
 end
 
