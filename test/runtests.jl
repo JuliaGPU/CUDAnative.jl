@@ -23,22 +23,24 @@ if haskey(ENV, "CI") && haskey(ENV, "JULIA_CUDA_VERSION")
 end
 
 length(devices()) > 0 || error("The CUDAnative.jl test suite requires a CUDA device")
-#= include("init.jl") =#
-#= include("pointer.jl") =#
-#= include("codegen.jl") =#
+include("init.jl")
+include("pointer.jl")
+include("codegen.jl")
 
 capability(device()) >= v"2.0" || error("The CUDAnative.jl test suite requires a CUDA device with compute capability 2.0 or higher")
-#= include("device/codegen.jl") =#
-#= include("device/execution.jl") =#
-#= include("device/pointer.jl") =#
-#= include("device/array.jl") =#
-#= include("device/cuda.jl") =#
-#= include("device/wmma.jl") =#
+include("device/codegen.jl")
+include("device/execution.jl")
+include("device/pointer.jl")
+include("device/array.jl")
+include("device/cuda.jl")
+if VERSION >= v"1.4.1" && capability(device()) >= v"7.0"
+include("device/wmma.jl")
 include("device/tiling.jl")
 include("device/matmul_kernels.jl")
+end
 
-#= include("nvtx.jl") =#
+include("nvtx.jl")
 
-#= include("examples.jl") =#
+include("examples.jl")
 
 end

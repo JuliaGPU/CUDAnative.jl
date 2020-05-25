@@ -44,12 +44,13 @@ See also: [`@device_code_sass`](@ref)
 function code_sass(io::IO, @nospecialize(func), @nospecialize(types), kernel::Bool=true;
                    verbose::Bool=false, kwargs...)
     tt = Base.to_tuple_type(types)
-    target = CUDACompilerTarget(supported_capability(device()))
-    job = CUDACompilerJob(target, FunctionSpec(func, tt, kernel); kwargs...)
+    target = PTXCompilerTarget(; cap=supported_capability(device()), kwargs...)
+    params = CUDACompilerParams()
+    job = CompilerJob(target, FunctionSpec(func, tt, kernel), params)
     code_sass(io, job; verbose=verbose)
 end
 
-function code_sass(io::IO, job::PTXCompilerJob; verbose::Bool=false)
+function code_sass(io::IO, job::CUDACompilerJob; verbose::Bool=false)
     if !job.source.kernel
         error("Can only generate SASS code for kernel functions")
     end
@@ -112,10 +113,11 @@ for method in (:code_typed, :code_warntype, :code_llvm, :code_native)
                          kernel::Bool=false, minthreads=nothing, maxthreads=nothing,
                          blocks_per_sm=nothing, maxregs=nothing, kwargs...)
             source = FunctionSpec(func, Base.to_tuple_type(types), kernel)
-            target = CUDACompilerTarget(supported_capability(device()))
-            job = CUDACompilerJob(target, source;
-                                  minthreads=minthreads, maxthreads=maxthreads,
-                                  blocks_per_sm=blocks_per_sm, maxregs=maxregs)
+            target = PTXCompilerTarget(; cap=supported_capability(device()),
+                                       minthreads=minthreads, maxthreads=maxthreads,
+                                       blocks_per_sm=blocks_per_sm, maxregs=maxregs)
+            params = CUDACompilerParams()
+            job = CompilerJob(target, source, params)
             GPUCompiler.$method($(args...); kwargs...)
         end
         $method(@nospecialize(func), @nospecialize(types); kwargs...) =
@@ -143,7 +145,7 @@ Evaluates the expression `ex` and prints the result of [`CUDAnative.code_sass`](
 [`CUDAnative.code_sass`](@ref).
 """
 macro device_code_sass(ex...)
-    function hook(job::PTXCompilerJob; io::IO=stdout, kwargs...)
+    function hook(job::CUDACompilerJob; io::IO=stdout, kwargs...)
         println(io, "// $job")
         println(io)
         code_sass(io, job; kwargs...)

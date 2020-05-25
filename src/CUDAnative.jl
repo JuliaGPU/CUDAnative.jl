@@ -6,6 +6,8 @@ using CUDAdrv
 using LLVM
 using LLVM.Interop
 
+using GPUCompiler
+
 using Adapt
 
 
@@ -35,6 +37,7 @@ const configure_lock = ReentrantLock()
 @noinline function _functional(show_reason::Bool=false)
     lock(configure_lock) do
         if configured[] === nothing
+            configured[] = false
             if __configure__(show_reason)
                 configured[] = true
                 try
@@ -43,8 +46,6 @@ const configure_lock = ReentrantLock()
                     configured[] = false
                     rethrow()
                 end
-            else
-                configured[] = false
             end
         end
     end
@@ -61,28 +62,6 @@ end
 
 ## source code includes
 
-# needs to be loaded _before_ the compiler infrastructure, because of generated functions
-include("device/tools.jl")
-include("device/pointer.jl")
-include("device/array.jl")
-include("device/cuda.jl")
-include("device/llvm.jl")
-include("device/tiling.jl")
-include("device/matmul_kernels.jl")
-
-using GPUCompiler
-include("device/runtime.jl")
-
-CUDACompilerTarget(args...; kwargs...) = PTXCompilerTarget(args...;
-    runtime_module=CUDAnative,
-    # filter out functions from libdevice and cudadevrt
-    isintrinsic_hook = fn->(fn=="__nvvm_reflect" || startswith(fn, "cuda")),
-    kwargs...)
-CUDACompilerJob(args...; kwargs...) = PTXCompilerJob(args...;
-    rewrite_ir_hook = (job,mod)->emit_exception_flag!(mod),
-    link_library_hook = (job,mod,fns)->link_libdevice!(mod, job.target.cap, fns),
-    kwargs...)
-
 include("init.jl")
 include("compatibility.jl")
 include("bindeps.jl")
@@ -90,6 +69,16 @@ include("bindeps.jl")
 include("cupti/CUPTI.jl")
 include("nvtx/NVTX.jl")
 
+# needs to be loaded _before_ the compiler infrastructure, because of generated functions
+include("device/pointer.jl")
+include("device/array.jl")
+include("device/cuda.jl")
+include("device/llvm.jl")
+include("device/runtime.jl")
+include("device/tiling.jl")
+include("device/matmul_kernels.jl")
+
+include("compiler.jl")
 include("execution.jl")
 include("exceptions.jl")
 include("reflection.jl")
