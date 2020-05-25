@@ -25,9 +25,9 @@ struct Default end
     # Cooperatively store a BLOCK_SHAPE.M x BLOCK_SHAPE.N tile of D from shared to global memory within one threadblock
     @unroll for warp_tile = parallellise(block_tile.MN, Tile(MEM_CD_WARP), warpId, WARPS_PER_BLOCK)
         @unroll for thread_tile = parallellise(warp_tile, Tile(MEM_CD_THREAD), laneId, 32)
-            x = Layout.load(SHARED_D_LAYOUT, shmem_d, thread_tile, block_tile.MN.size)
+            x = Layout.load(SHARED_D_LAYOUT, shmem_d, thread_tile)
             x = transform(x, thread_tile)
-            Layout.store!(GLOBAL_D_LAYOUT, d, x, translate(thread_tile, (M = block_i, N = block_j)), gemm_sz.MN.size)
+            Layout.store!(GLOBAL_D_LAYOUT, d, x, translate(thread_tile, (M = block_i, N = block_j)))
         end
     end
 end

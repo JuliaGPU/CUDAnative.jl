@@ -30,9 +30,9 @@ function matmul_impl(a, b, c, d,
 
     @unroll for warp_tile = parallellise(block_tile.MN, Tile(MEM_CD_WARP), warpId, WARPS_PER_BLOCK)
         @unroll for thread_tile = parallellise(warp_tile, Tile(MEM_CD_THREAD), laneId, 32)
-            x = Layout.load(GLOBAL_C_LAYOUT, c, translate(thread_tile, (M = block_i, N = block_j)), gemm_sz.MN.size)
+            x = Layout.load(GLOBAL_C_LAYOUT, c, translate(thread_tile, (M = block_i, N = block_j)))
             x = transf_gl2sh_c(x, thread_tile)
-            Layout.store!(SHARED_C_LAYOUT, shmem_c, x, thread_tile, block_tile.MN.size)
+            Layout.store!(SHARED_C_LAYOUT, shmem_c, x, thread_tile)
         end
     end
 
@@ -61,18 +61,18 @@ function matmul_impl(a, b, c, d,
         # (3.1) Cooperatively load a BLOCK_SHAPE.M x BLOCK_SHAPE.K tile of A from global to shared memory within one threadblock
         @unroll for warp_tile = parallellise(block_tile.MK, Tile(MEM_A_WARP), warpId, WARPS_PER_BLOCK)
             @unroll for thread_tile = parallellise(warp_tile, Tile(MEM_A_THREAD), laneId, 32)
-                x = Layout.load(GLOBAL_A_LAYOUT, a, translate(thread_tile, (M = block_i, K = block_k)), gemm_sz.MK.size)
+                x = Layout.load(GLOBAL_A_LAYOUT, a, translate(thread_tile, (M = block_i, K = block_k)))
                 x = transf_gl2sh_a(x, thread_tile)
-                Layout.store!(SHARED_A_LAYOUT, shmem_a, x, thread_tile, block_tile.MK.size)
+                Layout.store!(SHARED_A_LAYOUT, shmem_a, x, thread_tile)
             end
         end
 
         # (3.2) Cooperatively load a BLOCK_SHAPE.K x BLOCK_SHAPE.N tile of B from global to shared memory within one threadblock
         @unroll for warp_tile = parallellise(block_tile.KN, Tile(MEM_B_WARP), warpId, WARPS_PER_BLOCK)
             @unroll for thread_tile = parallellise(warp_tile, Tile(MEM_B_THREAD), laneId, 32)
-                x = Layout.load(GLOBAL_B_LAYOUT, b, translate(thread_tile, (K = block_k, N = block_j)), gemm_sz.KN.size)
+                x = Layout.load(GLOBAL_B_LAYOUT, b, translate(thread_tile, (K = block_k, N = block_j)))
                 x = transf_gl2sh_b(x, thread_tile)
-                Layout.store!(SHARED_B_LAYOUT, shmem_b, x, thread_tile, block_tile.KN.size)
+                Layout.store!(SHARED_B_LAYOUT, shmem_b, x, thread_tile)
             end
         end
 
