@@ -45,7 +45,7 @@ function matmul_impl(a, b, c, d,
 
     @unroll for i = 1 : NUM_FRAGMENTS_M
         @unroll for j = 1 : NUM_FRAGMENTS_N
-            tile = translate(warp_tile, (M = (i-1)*COMPUTE_OP_SHAPE.M, N = (j-1)*COMPUTE_OP_SHAPE.N))
+            tile = translate_const(warp_tile, (M = (i-1)*COMPUTE_OP_SHAPE.M, N = (j-1)*COMPUTE_OP_SHAPE.N))
             @inbounds c_frags[i, j] = transf_sh2rf_c(Operator.load_c(OPERATOR, SHARED_C_LAYOUT, shmem_c, tile), tile)
         end
     end
@@ -84,7 +84,7 @@ function matmul_impl(a, b, c, d,
             a_frags = MArray{Tuple{NUM_FRAGMENTS_M}, Operator.fragtype_a(OPERATOR, SHARED_A_LAYOUT)}(undef)
 
             @unroll for i = 1 : NUM_FRAGMENTS_M
-                a_tile = translate(warp_tile.MK, (M = (i-1)*COMPUTE_OP_SHAPE.M, K = 0))
+                a_tile = translate_const(warp_tile.MK, (M = (i-1)*COMPUTE_OP_SHAPE.M, K = 0))
                 @inbounds a_frags[i] = transf_sh2rf_a(Operator.load_a(OPERATOR, SHARED_A_LAYOUT, shmem_a, a_tile), a_tile)
             end
 
@@ -92,7 +92,7 @@ function matmul_impl(a, b, c, d,
             b_frags = MArray{Tuple{NUM_FRAGMENTS_N}, Operator.fragtype_b(OPERATOR, SHARED_B_LAYOUT)}(undef)
 
             @unroll for j = 1 : NUM_FRAGMENTS_N
-                b_tile = translate(warp_tile.KN, (K = 0, N = (j-1)*COMPUTE_OP_SHAPE.N))
+                b_tile = translate_const(warp_tile.KN, (K = 0, N = (j-1)*COMPUTE_OP_SHAPE.N))
                 @inbounds b_frags[j] = transf_sh2rf_b(Operator.load_b(OPERATOR, SHARED_B_LAYOUT, shmem_b, b_tile), b_tile)
             end
 
@@ -114,7 +114,7 @@ function matmul_impl(a, b, c, d,
 
     @unroll for i = 1 : NUM_FRAGMENTS_M
         @unroll for j = 1 : NUM_FRAGMENTS_N
-            tile = translate(warp_tile, (M = (i-1)*COMPUTE_OP_SHAPE.M, N = (j-1)*COMPUTE_OP_SHAPE.N))
+            tile = translate_const(warp_tile, (M = (i-1)*COMPUTE_OP_SHAPE.M, N = (j-1)*COMPUTE_OP_SHAPE.N))
             Operator.store_d(OPERATOR, SHARED_D_LAYOUT, shmem_d, transf_rf2sh_d(c_frags[i, j], tile), tile)
         end
     end
