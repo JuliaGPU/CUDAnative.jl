@@ -119,7 +119,7 @@ export translate
 """
     translate(tile::Tile{names, T}, offset::NamedTuple{names, T})
 
-Translate (i.e. move) a [`Tile`](@ref) by an `offset`.
+Translate (i.e. move) a [`Tile`](@ref) by a constant `offset`.
 
 # Arguments
 - `tile`: The [`Tile`](@ref) to translate.
@@ -131,24 +131,6 @@ Translate (i.e. move) a [`Tile`](@ref) by an `offset`.
 end
 
 @inline translate(tile::Tile{size, names, T}, offset::Tuple) where {names, T, size} = translate(tile, NamedTuple{names}(offset))
-
-export translate_const
-
-"""
-    translate_const(tile::Tile{names, T}, offset::NamedTuple{names, T})
-
-Translate (i.e. move) a [`Tile`](@ref) by a constant `offset`.
-
-# Arguments
-- `tile`: The [`Tile`](@ref) to translate.
-- `offset`: The `offset` in each dimension.
-"""
-@inline function translate_const(tile::Tile{size, names, T}, offset::NamedTuple{names, T}) where {names, T, size}
-    offset = map(+, tile.offset, offset)
-    return Tile{size, names, T}(tile.base, offset)
-end
-
-@inline translate_const(tile::Tile{size, names, T}, offset::Tuple) where {names, T, size} = translate_const(tile, NamedTuple{names}(offset))
 
 # -------------
 # TileIterators
