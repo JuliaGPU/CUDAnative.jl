@@ -112,6 +112,8 @@ tensor with dimensions `dims`.
     @inbounds return LinearIndices(Tuple(dims))[ind...]
 end
 
+@inline linearise(coord::NamedTuple{names, T}, dims::Tuple) where {names, T} = linearise(coord, NamedTuple{names}(dims))
+
 export translate
 
 """
