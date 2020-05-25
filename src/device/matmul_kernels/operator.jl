@@ -27,32 +27,28 @@ struct WMMAOp{M, N, K} end
 
 function load_a(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-    ind = Tuple(tile.index) .+ 1
-    @inbounds linear_index = LinearIndices(size(workspace))[ind...]
+    linear_index = linearise(tile.index, size(workspace))
     ptr = pointer(workspace, linear_index)
     return WMMA.load_a(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
 function load_b(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-    ind = Tuple(tile.index) .+ 1
-    @inbounds linear_index = LinearIndices(size(workspace))[ind...]
+    linear_index = linearise(tile.index, size(workspace))
     ptr = pointer(workspace, linear_index)
     return WMMA.load_b(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
 function load_c(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-    ind = Tuple(tile.index) .+ 1
-    @inbounds linear_index = LinearIndices(size(workspace))[ind...]
+    linear_index = linearise(tile.index, size(workspace))
     ptr = pointer(workspace, linear_index)
     return WMMA.load_c(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
 function store_d(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, frag, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-    ind = Tuple(tile.index) .+ 1
-    @inbounds linear_index = LinearIndices(size(workspace))[ind...]
+    linear_index = linearise(tile.index, size(workspace))
     ptr = pointer(workspace, linear_index)
     WMMA.store_d(ptr, frag, size(workspace, 1), WMMA.ColMajor, conf)
 end
