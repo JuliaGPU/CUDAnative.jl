@@ -61,9 +61,9 @@ using CUDAnative.MatMul
     end
 
     @testset "WMMA Complex GEMM" begin
-        @testset "(M = $M, N = $N, K = $K)" for M in [128, 256, 1024, 2048],
-            N in [128, 256, 1024, 2048],
-            K in [128, 256, 1024, 2048]
+        @testset "(M = $M, N = $N, K = $K)" for M in [128, 256],
+            N in [128, 256],
+            K in [128, 256]
 
             a_h = rand(Complex{Float16}, (M, K)) / sqrt(Float16(K));
             b_h = rand(Complex{Float16}, (K, N)) / sqrt(Float16(K));
