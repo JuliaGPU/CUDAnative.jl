@@ -1,4 +1,4 @@
-# CUDAnative.jl
+# ~CUDAnative.jl~: DEPRECATED, use [CUDA.jl](https://github.com/JuliaGPU/CUDA.jl) instead!
 
 *Support for compiling and executing native Julia kernels on CUDA hardware.*
 
