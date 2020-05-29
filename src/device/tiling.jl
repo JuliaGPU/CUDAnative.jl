@@ -132,15 +132,6 @@ end
 
 @inline translate(tile::Tile{size, names, T}, offset::Tuple) where {names, T, size} = translate(tile, NamedTuple{names}(offset))
 
-export translate_offset
-
-@inline function translate_offset(tile::Tile{size, names, T}, offset::NamedTuple{names, T}) where {names, T, size}
-    new_offset = map(+, tile.offset, offset)
-    return Tile{size, names, T}(tile.base, new_offset)
-end
-
-@inline translate_offset(tile::Tile{size, names, T}, offset::Tuple) where {names, T, size} = translate_offset(tile, NamedTuple{names}(offset))
-
 # -------------
 # TileIterators
 # -------------

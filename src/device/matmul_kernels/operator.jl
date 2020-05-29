@@ -25,43 +25,31 @@ struct WMMAOp{M, N, K} end
 @inline fragtype_b(::Type{WMMAOp{16, 16, 16}}, ::Type{Layout.AlignedColMajor{Float16}}) = WMMA.Fragment{16, 16, 16, 16, Float16, WMMA.ColMajor, WMMA.MatrixB}
 @inline fragtype_accum(::Type{WMMAOp{16, 16, 16}}, ::Type{Layout.AlignedColMajor{Float32}}) = WMMA.Fragment{16, 16, 16, 8, Float32, WMMA.Unspecified, WMMA.Accumulator}
 
-@inline function load_a(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
+function load_a(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-
-    linear_base = linearise(tile.base, size(workspace))
-    linear_offset = linearise(tile.offset, size(workspace))
-
-    ptr = pointer(workspace, linear_base) + (linear_offset - 1) * sizeof(Float16)
+    linear_index = linearise(tile.index, size(workspace))
+    ptr = pointer(workspace, linear_index)
     return WMMA.load_a(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
-@inline function load_b(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
+function load_b(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float16}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-
-    linear_base = linearise(tile.base, size(workspace))
-    linear_offset = linearise(tile.offset, size(workspace))
-
-    ptr = pointer(workspace, linear_base) + (linear_offset - 1) * sizeof(Float16)
+    linear_index = linearise(tile.index, size(workspace))
+    ptr = pointer(workspace, linear_index)
     return WMMA.load_b(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
-@inline function load_c(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, tile::Tile) where {M, N, K}
+function load_c(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-
-    linear_base = linearise(tile.base, size(workspace))
-    linear_offset = linearise(tile.offset, size(workspace))
-
-    ptr = pointer(workspace, linear_base) + (linear_offset - 1) * sizeof(Float32)
+    linear_index = linearise(tile.index, size(workspace))
+    ptr = pointer(workspace, linear_index)
     return WMMA.load_c(ptr, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
-@inline function store_d(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, frag, tile::Tile) where {M, N, K}
+function store_d(::Type{WMMAOp{M, N, K}}, ::Type{Layout.AlignedColMajor{Float32}}, workspace, frag, tile::Tile) where {M, N, K}
     conf = WMMA.Config{M, N, K, Float32}
-
-    linear_base = linearise(tile.base, size(workspace))
-    linear_offset = linearise(tile.offset, size(workspace))
-
-    ptr = pointer(workspace, linear_base) + (linear_offset - 1) * sizeof(Float32)
+    linear_index = linearise(tile.index, size(workspace))
+    ptr = pointer(workspace, linear_index)
     WMMA.store_d(ptr, frag, size(workspace, 1), WMMA.ColMajor, conf)
 end
 
