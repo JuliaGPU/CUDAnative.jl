@@ -16,6 +16,8 @@ function plot_results(file, label)
 end
 
 plot_results("cudanative.csv", "CUDAnative")
+plot_results("cudanative-generic-fp32.csv", "CUDAnative generic (FP32)")
+plot_results("cudanative-generic-fp16.csv", "CUDAnative generic (FP16)")
 plot_results("cutlass.csv", "CUTLASS Example")
 
 title!("Performance of mixed-precision complex GEMM\nProblem size: N x N x N")
