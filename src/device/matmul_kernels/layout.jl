@@ -39,16 +39,18 @@ struct AlignedColMajor{T} <: LayoutBase{T} end
 
 # TODO: cleanup vectorisation
 @inline function load(::Type{AlignedColMajor{T}}, workspace, tile::Tile{size}) where {T, size}
-    res = MArray{Tuple{size[1], size[2]}, T}(undef)
+    vec_len = 16 ÷ sizeof(T)
+    N = (sizeof(T) * vec_len) ÷ sizeof(Float32)
+    res = MArray{Tuple{size[1] ÷ vec_len, size[2]}, NTuple{N, VecElement{Float32}}}(undef)
 
     @unroll for j = 1 : size[2]
-        @unroll for i = 1 : size[1]
+        @unroll for i = 1 : vec_len : size[1]
             t = translate(tile, (i - 1, j - 1))
 
             linear_base = linearise(t.base, Base.size(workspace))
             linear_offset = linearise(t.offset, Base.size(workspace))
 
-            @inbounds res[i, j] = workspace[linear_base + linear_offset - 1]
+            @inbounds res[i, j] = vloada(Vec{vec_len, T}, pointer(workspace, linear_base), linear_offset)
         end
     end
 
@@ -56,14 +58,16 @@ struct AlignedColMajor{T} <: LayoutBase{T} end
 end
 
 @inline function store!(::Type{AlignedColMajor{T}}, workspace, value, tile::Tile{size}) where {T, size}
+    vec_len = 16 ÷ sizeof(T)
+
     @unroll for j = 1 : size[2]
-        @unroll for i = 1 : size[1]
+        @unroll for i = 1 : vec_len : size[1]
             t = translate(tile, (i - 1, j - 1))
 
             linear_base = linearise(t.base, Base.size(workspace))
             linear_offset = linearise(t.offset, Base.size(workspace))
 
-            @inbounds workspace[linear_base + linear_offset - 1] = value[i,j]
+            vstorea!(Vec{vec_len, T}, pointer(workspace, linear_base), value[i, j], linear_offset)
         end
     end
 end
