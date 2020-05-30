@@ -40,8 +40,7 @@ struct AlignedColMajor{T} <: LayoutBase{T} end
 # TODO: cleanup vectorisation
 @inline function load(::Type{AlignedColMajor{T}}, workspace, tile::Tile{size}) where {T, size}
     vec_len = 16 ÷ sizeof(T)
-    N = (sizeof(T) * vec_len) ÷ sizeof(Float32)
-    res = MArray{Tuple{size[1] ÷ vec_len, size[2]}, NTuple{N, VecElement{Float32}}}(undef)
+    res = MArray{Tuple{size[1] ÷ vec_len, size[2]}, NTuple{vec_len, VecElement{T}}}(undef)
 
     @unroll for j = 1 : size[2]
         @unroll for i = 1 : vec_len : size[1]

@@ -261,23 +261,37 @@ export Vec
 struct Vec{N, T} end
 
 export vloada
-@inline @generated function vloada(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, i::Integer = 1) where {N, T, AS}
-    alignment = sizeof(T) * N
-    vec_len = (sizeof(T) * N) ÷ sizeof(Float32)
+@inline @generated function vloada(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, i::Integer=1) where {N, T, AS}
+    jl_ty   = convert(LLVMType, T)
+    as      = convert(Int, AS)
+
+    ir = "%ptr = inttoptr i64 %0 to $jl_ty addrspace($as)*
+          %gep = getelementptr $jl_ty, $jl_ty addrspace($as)* %ptr, i64 %1
+
+          %vecptr = bitcast $jl_ty addrspace($as)* %gep to <$N x $jl_ty> addrspace($as)*
+          %val = load <$N x $jl_ty>, <$N x $jl_ty> addrspace($as)* %vecptr, align 16
+
+          ret <$N x $jl_ty> %val"
 
     return quote
-        vec_ptr = convert(CUDAnative.DevicePtr{NTuple{$vec_len, VecElement{Float32}}, AS}, ptr)
-        return unsafe_load(vec_ptr, (i - 1) ÷ N + 1, Val($alignment))
+        Base.llvmcall($ir, NTuple{N, VecElement{T}}, Tuple{CUDAnative.DevicePtr{T, AS}, Int64}, ptr, i - 1)
     end
 end
 
 export vstorea!
-@inline @generated function vstorea!(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, x, i::Integer = 1) where {N, T, AS}
-    alignment = sizeof(T) * N
-    vec_len = (sizeof(T) * N) ÷ sizeof(Float32)
+@inline @generated function vstorea!(::Type{Vec{N, T}}, ptr::CUDAnative.DevicePtr{T, AS}, x, i::Integer=1) where {N, T, AS}
+    jl_ty   = convert(LLVMType, T)
+    as      = convert(Int, AS)
+
+    ir = "%ptr = inttoptr i64 %0 to $jl_ty addrspace($as)*
+          %gep = getelementptr $jl_ty, $jl_ty addrspace($as)* %ptr, i64 %1
+
+          %vecptr = bitcast $jl_ty addrspace($as)* %gep to <$N x $jl_ty> addrspace($as)*
+          store <$N x $jl_ty> %2, <$N x $jl_ty> addrspace($as)* %vecptr, align 16
+
+          ret void"
 
     return quote
-        vec_ptr = convert(CUDAnative.DevicePtr{NTuple{$vec_len, VecElement{Float32}}, AS}, ptr)
-        unsafe_store!(vec_ptr, x, (i - 1) ÷ N + 1, Val($alignment))
+        Base.llvmcall($ir, Nothing, Tuple{CUDAnative.DevicePtr{T, AS}, Int64, NTuple{N, VecElement{T}}}, ptr, i - 1, x)
     end
 end
