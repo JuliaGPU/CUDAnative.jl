@@ -24,13 +24,13 @@ end
         ir = sprint(io->CUDAnative.code_llvm(io, f,
                                              Tuple{CUDAnative.DevicePtr{Float32,AS.Global}};
                                              dump_module=true, raw=true))
-        @test occursin("gputbaa_global", ir)
+        @test occursin("ptxtbaa_global", ir)
 
         # no TBAA on generic pointers
         ir = sprint(io->CUDAnative.code_llvm(io, f,
                                              Tuple{CUDAnative.DevicePtr{Float32,AS.Generic}};
                                              dump_module=true, raw=true))
-        @test !occursin("gputbaa", ir)
+        @test !occursin("ptxtbaa", ir)
     end
 
 
@@ -39,7 +39,7 @@ end
     ir = sprint(io->CUDAnative.code_llvm(io, cached_load,
                                          Tuple{CUDAnative.DevicePtr{Float32,AS.Global}};
                                          dump_module=true, raw=true))
-    @test occursin("gputbaa_global", ir)
+    @test occursin("ptxtbaa_global", ir)
 end
 
 @testset "ghost values" begin
