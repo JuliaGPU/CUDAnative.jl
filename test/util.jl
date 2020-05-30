@@ -76,16 +76,22 @@ end
 
 function julia_script(code, args=``)
     # FIXME: this doesn't work when the compute mode is set to exclusive
-    script = """using CUDAnative, CUDAdrv
-                const CuArray = CUDAnative.CuHostArray
-                device!($(device()))
-
-                $code"""
-    cmd = Base.julia_cmd()
+    script = "using CUDAnative, CUDAdrv; device!($(device())); $code"
+    cmd = ```
+        $(Base.julia_cmd())
+        --code-coverage=$(("none", "user", "all")[Base.JLOptions().code_coverage + 1])
+        --color=$(Base.have_color ? "yes" : "no")
+        --compiled-modules=$(Bool(Base.JLOptions().use_compiled_modules) ? "yes" : "no")
+        --check-bounds=yes
+        --startup-file=$(Base.JLOptions().startupfile == 1 ? "yes" : "no")
+        --track-allocation=$(("none", "user", "all")[Base.JLOptions().malloc_log + 1])
+        --eval $script
+    ```
     if Base.JLOptions().project != C_NULL
+        # --project isn't preserved by julia_cmd()
         cmd = `$cmd --project=$(unsafe_string(Base.JLOptions().project))`
     end
-    cmd = `$cmd --eval $script $args`
+    cmd = `$cmd $args`
 
     out = Pipe()
     err = Pipe()

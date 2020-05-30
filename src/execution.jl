@@ -3,6 +3,65 @@
 export @cuda, cudaconvert, cufunction, dynamic_cufunction, nextwarp, prevwarp
 
 
+## helper functions
+
+# split keyword arguments to `@cuda` into ones affecting the macro itself, the compiler and
+# the code it generates, or the execution
+function split_kwargs(kwargs)
+    macro_kws    = [:dynamic]
+    compiler_kws = [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name]
+    call_kws     = [:cooperative, :blocks, :threads, :config, :shmem, :stream]
+    macro_kwargs = []
+    compiler_kwargs = []
+    call_kwargs = []
+    for kwarg in kwargs
+        if Meta.isexpr(kwarg, :(=))
+            key,val = kwarg.args
+            if isa(key, Symbol)
+                if key in macro_kws
+                    push!(macro_kwargs, kwarg)
+                elseif key in compiler_kws
+                    push!(compiler_kwargs, kwarg)
+                elseif key in call_kws
+                    push!(call_kwargs, kwarg)
+                else
+                    throw(ArgumentError("unknown keyword argument '$key'"))
+                end
+            else
+                throw(ArgumentError("non-symbolic keyword '$key'"))
+            end
+        else
+            throw(ArgumentError("non-keyword argument like option '$kwarg'"))
+        end
+    end
+
+    return macro_kwargs, compiler_kwargs, call_kwargs
+end
+
+# assign arguments to variables, handle splatting
+function assign_args!(code, args)
+    # handle splatting
+    splats = map(arg -> Meta.isexpr(arg, :(...)), args)
+    args = map(args, splats) do arg, splat
+        splat ? arg.args[1] : arg
+    end
+
+    # assign arguments to variables
+    vars = Tuple(gensym() for arg in args)
+    map(vars, args) do var,arg
+        push!(code.args, :($var = $arg))
+    end
+
+    # convert the arguments, compile the function and call the kernel
+    # while keeping the original arguments alive
+    var_exprs = map(vars, args, splats) do var, arg, splat
+         splat ? Expr(:(...), var) : var
+    end
+
+    return vars, var_exprs
+end
+
+
 ## high-level @cuda interface
 
 """
@@ -53,18 +112,8 @@ macro cuda(ex...)
     args = call.args[2:end]
 
     code = quote end
+    macro_kwargs, compiler_kwargs, call_kwargs = split_kwargs(kwargs)
     vars, var_exprs = assign_args!(code, args)
-
-    # group keyword argument
-    macro_kwargs, compiler_kwargs, call_kwargs, other_kwargs =
-        split_kwargs(kwargs,
-                     [:dynamic],
-                     [:minthreads, :maxthreads, :blocks_per_sm, :maxregs, :name],
-                     [:cooperative, :blocks, :threads, :config, :shmem, :stream])
-    if !isempty(other_kwargs)
-        key,val = first(other_kwargs).args
-        throw(ArgumentError("Unsupported keyword argument '$key'"))
-    end
 
     # handle keyword arguments that influence the macro's behavior
     dynamic = false
@@ -170,13 +219,8 @@ AbstractKernel
     sig = Base.signature_type(F, TT)
     args = (:F, (:( args[$i] ) for i in 1:length(args))...)
 
-    # filter out arguments that shouldn't be passed
-    predicate = if VERSION >= v"1.5.0-DEV.581"
-        dt -> isghosttype(dt) || Core.Compiler.isconstType(dt)
-    else
-        dt -> isghosttype(dt)
-    end
-    to_pass = map(!predicate, sig.parameters)
+    # filter out ghost arguments that shouldn't be passed
+    to_pass = map(!isghosttype, sig.parameters)
     call_t =                  Type[x[1] for x in zip(sig.parameters,  to_pass) if x[2]]
     call_args = Union{Expr,Symbol}[x[1] for x in zip(args, to_pass)            if x[2]]
 
@@ -292,19 +336,18 @@ function cufunction(f::Core.Function, tt::Type=Tuple{}; name=nothing, kwargs...)
     env = hash(pointer_from_objref(ctx)) # contexts are unique, but handles might alias
     # TODO: implement this as a hash function in CUDAdrv
 
-    source = FunctionSpec(f, tt, true, name)
-    GPUCompiler.cached_compilation(_cufunction, source, env; kwargs...)::HostKernel{f,tt}
+    spec = FunctionSpec(f, tt, true, name)
+    GPUCompiler.cached_compilation(_cufunction, spec, env; kwargs...)::HostKernel{f,tt}
 end
 
 # actual compilation
-function _cufunction(source::FunctionSpec; kwargs...)
+function _cufunction(spec::FunctionSpec; kwargs...)
     # compile to PTX
     ctx = context()
     dev = device(ctx)
     cap = supported_capability(dev)
-    target = PTXCompilerTarget(; cap=supported_capability(dev), kwargs...)
-    params = CUDACompilerParams()
-    job = CompilerJob(target, source, params)
+    target = CUDACompilerTarget(supported_capability(dev))
+    job = CUDACompilerJob(target, spec; kwargs...)
     asm, kernel_fn, undefined_fns = GPUCompiler.compile(:asm, job; strict=true)
 
     # settings to JIT based on Julia's debug setting
@@ -334,7 +377,7 @@ function _cufunction(source::FunctionSpec; kwargs...)
     # JIT into an executable kernel object
     mod = CuModule(image, jit_options)
     fun = CuFunction(mod, kernel_fn)
-    kernel = HostKernel{source.f,source.tt}(ctx, mod, fun)
+    kernel = HostKernel{spec.f,spec.tt}(ctx, mod, fun)
 
     create_exceptions!(mod)
 

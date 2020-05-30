@@ -8,10 +8,9 @@ GPUCompiler.reset_runtime()
 
 # load or build the runtime for the most likely compilation job given a compute capability
 function load_runtime(cap::VersionNumber)
-    target = PTXCompilerTarget(; cap=cap)
-    dummy_source = FunctionSpec(()->return, Tuple{})
-    params = CUDACompilerParams()
-    job = CompilerJob(target, dummy_source, params)
+    target = CUDACompilerTarget(cap)
+    dummy_spec = FunctionSpec(()->return, Tuple{})
+    job = CUDACompilerJob(target, dummy_spec)
     GPUCompiler.load_runtime(job)
 end
 
@@ -39,10 +38,7 @@ function report_exception(ex)
     return
 end
 
-function report_oom(sz)
-    @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
-    return
-end
+report_oom(sz) = @cuprintf("ERROR: Out of dynamic GPU memory (trying to allocate %i bytes)\n", sz)
 
 function report_exception_name(ex)
     @cuprintf("""

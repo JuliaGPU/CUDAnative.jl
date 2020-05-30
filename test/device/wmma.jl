@@ -1,5 +1,6 @@
 # Need https://github.com/JuliaLang/julia/pull/33970
 # and  https://github.com/JuliaLang/julia/pull/34043
+if VERSION >= v"1.4.0-DEV.666" && capability(device()) >= v"7.0"
 
 using CUDAnative.WMMA
 
@@ -230,7 +231,7 @@ is_debug = ccall(:jl_is_debugbuild, Cint, ()) != 0
                 return
             end
 
-            @test_broken_if v"1.5.0-DEV.393" <= VERSION < v"1.5.0-DEV.851" begin
+            @test_broken_if VERSION >= v"1.5.0-DEV.393" begin
                 @cuda threads=32 kernel(a_dev, b_dev, c_dev, d_dev, alpha, beta)
                 d = Array(d_dev)
 
@@ -292,4 +293,5 @@ end
 
 ################################################################################
 
+end
 end
